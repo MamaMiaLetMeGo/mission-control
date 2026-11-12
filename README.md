@@ -120,3 +120,7 @@ npm run build
 The automated tests use a separate in-memory database and temporary Git fixtures. They do not spend API credits or touch your project.
 
 Built with the [Codex TypeScript SDK](https://learn.chatgpt.com/docs/codex-sdk), [Laravel](https://laravel.com/docs/13.x/installation), and [Laravel queues](https://laravel.com/docs/13.x/queues).
+
+## License
+
+Released under the [MIT License](LICENSE).
