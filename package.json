@@ -1,0 +1,26 @@
+{
+    "$schema": "https://www.schemastore.org/package.json",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "build": "vite build",
+        "dev": "concurrently --kill-others --names app,queue,vite \"php artisan serve --host=127.0.0.1 --port=8765\" \"php artisan queue:listen --queue=missions,default --tries=1 --timeout=900 --sleep=2\" \"vite --host=127.0.0.1\"",
+        "start": "concurrently --kill-others --names app,queue \"php artisan serve --host=127.0.0.1 --port=8765\" \"php artisan queue:listen --queue=missions,default --tries=1 --timeout=900 --sleep=2\"",
+        "worker:build": "npm --prefix worker run build",
+        "desktop:build": "node resources/desktop/build.mjs",
+        "desktop:install": "node resources/desktop/build.mjs --install",
+        "test:frontend": "node --test tests/Unit/*.test.mjs",
+        "test:worker": "npm --prefix worker test"
+    },
+    "devDependencies": {
+        "@tailwindcss/vite": "^4.0.0",
+        "concurrently": "^10.0.3",
+        "laravel-vite-plugin": "^3.1",
+        "tailwindcss": "^4.0.0",
+        "vite": "^8.0.0"
+    },
+    "optionalDependencies": {
+        "@laravel/multiplex": "^0.4.1"
+    },
+    "name": "mission-control"
+}
