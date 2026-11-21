@@ -135,6 +135,45 @@ class BrainControllerTest extends TestCase
             ->assertSee('2 of 5 decisions before the next learning run')->assertSee('Learn now');
     }
 
+    public function test_a_failed_edit_shows_its_error_and_input_only_on_that_row(): void
+    {
+        $first = Preference::factory()->create(['text' => 'First preference.']);
+        $second = Preference::factory()->create(['text' => 'Second preference.']);
+
+        $response = $this->followingRedirects()->from(route('brain.index'))->post(route('brain.update', $first), ['text' => 'Broken lead text.', 'lead' => 'nobody', 'status' => 'active', 'brain_form' => (string) $first->id]);
+
+        $html = $response->getContent();
+        $this->assertSame(1, substr_count($html, 'Broken lead text.'));
+        $this->assertSame(1, substr_count($html, 'role="alert">The selected lead is invalid.'));
+        $this->assertStringContainsString('value="Second preference."', $html);
+        $this->assertStringContainsString('id="preference-text-'.$first->id.'" name="text" value="Broken lead text."', $html);
+        $this->assertStringContainsString('id="new-preference-text" name="text" value=""', $html);
+    }
+
+    public function test_a_status_only_switch_off_leaves_text_and_lead_unchanged(): void
+    {
+        $lead = Lead::factory()->create();
+        $preference = Preference::factory()->forLead($lead)->create(['text' => 'Keep me.']);
+
+        $this->post(route('brain.update', $preference), ['status' => 'off'])->assertSessionHasNoErrors();
+
+        $preference->refresh();
+        $this->assertSame('off', $preference->status);
+        $this->assertSame('Keep me.', $preference->text);
+        $this->assertSame($lead->id, $preference->lead_id);
+    }
+
+    public function test_a_failed_switch_on_shows_the_cap_message_next_to_that_row(): void
+    {
+        Preference::factory()->count(Preference::MAX_ACTIVE)->create();
+        $off = Preference::factory()->off()->create(['text' => 'Dormant.']);
+
+        $response = $this->followingRedirects()->from(route('brain.index'))->post(route('brain.update', $off), ['status' => 'active', 'brain_form' => 'toggle-'.$off->id]);
+
+        $this->assertSame(1, substr_count($response->getContent(), 'role="alert">20 preferences are already active. Switch one off first.'));
+        $this->assertSame('off', $off->fresh()->status);
+    }
+
     public function test_the_journal_points_to_the_brain(): void
     {
         $this->get(route('profile'))->assertOk()

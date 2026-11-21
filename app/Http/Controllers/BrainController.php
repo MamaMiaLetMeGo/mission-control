@@ -12,6 +12,7 @@ use Closure;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
@@ -48,14 +49,16 @@ class BrainController extends Controller
     public function store(Request $request, Brain $brain): RedirectResponse
     {
         $data = $this->validated($request, $brain, false);
-        $this->guardCap($data['status']);
 
-        Preference::query()->create([
-            'text' => $brain->clean($data['text']),
-            'lead_id' => $this->leadId($data['lead'] ?? null),
-            'status' => 'active',
-            'source' => 'manual',
-        ]);
+        DB::transaction(function () use ($data, $brain): void {
+            $this->guardCap();
+            Preference::query()->create([
+                'text' => $brain->clean($data['text']),
+                'lead_id' => $this->leadId($data['lead'] ?? null),
+                'status' => 'active',
+                'source' => 'manual',
+            ]);
+        });
 
         return to_route('brain.index')->with('status', 'Preference added.');
     }
@@ -63,16 +66,23 @@ class BrainController extends Controller
     public function update(Request $request, Brain $brain, Preference $preference): RedirectResponse
     {
         $data = $this->validated($request, $brain, true);
-        if ($data['status'] === 'active' && $preference->status !== 'active') {
-            $this->guardCap('active');
-        }
 
-        $preference->update([
-            'text' => $brain->clean($data['text']),
-            'lead_id' => $this->leadId($data['lead'] ?? null),
-            'status' => $data['status'],
-            'seen_at' => $preference->source === 'learned' ? ($preference->seen_at ?? now()) : $preference->seen_at,
-        ]);
+        DB::transaction(function () use ($data, $brain, $preference): void {
+            $preference = Preference::query()->lockForUpdate()->findOrFail($preference->id);
+            if ($data['status'] === 'active' && $preference->status !== 'active') {
+                $this->guardCap();
+            }
+
+            $changes = ['status' => $data['status']];
+            if (array_key_exists('text', $data)) {
+                $changes['text'] = $brain->clean($data['text']);
+                $changes['lead_id'] = $this->leadId($data['lead'] ?? null);
+            }
+            if ($preference->source === 'learned' && $preference->seen_at === null && array_key_exists('text', $data)) {
+                $changes['seen_at'] = now();
+            }
+            $preference->update($changes);
+        });
 
         return to_route('brain.index')->with('status', 'Preference saved.');
     }
@@ -92,12 +102,13 @@ class BrainController extends Controller
     }
 
     /**
-     * @return array{text: string, lead?: ?string, status: string}
+     * @return array{text?: string, lead?: ?string, status: string}
      */
     private function validated(Request $request, Brain $brain, bool $updating): array
     {
+        $statusOnly = $updating && ! $request->hasAny(['text', 'lead']);
         $data = $request->validate([
-            'text' => ['required', 'string', 'max:300', function (string $attribute, mixed $value, Closure $fail) use ($brain): void {
+            'text' => [$statusOnly ? 'sometimes' : 'required', 'string', 'max:300', function (string $attribute, mixed $value, Closure $fail) use ($brain): void {
                 if ($brain->clean((string) $value) === '') {
                     $fail('The text must include some words.');
                 }
@@ -110,9 +121,9 @@ class BrainController extends Controller
         return $data;
     }
 
-    private function guardCap(string $status): void
+    private function guardCap(): void
     {
-        if ($status === 'active' && Preference::query()->active()->count() >= Preference::MAX_ACTIVE) {
+        if (Preference::query()->active()->lockForUpdate()->count() >= Preference::MAX_ACTIVE) {
             throw ValidationException::withMessages(['text' => Preference::MAX_ACTIVE.' preferences are already active. Switch one off first.']);
         }
     }

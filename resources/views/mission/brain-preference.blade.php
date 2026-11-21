@@ -1,6 +1,7 @@
 @php
     $marker = (string) $preference->id;
     $editing = (string) old('brain_form') === $marker;
+    $toggleFailed = (string) old('brain_form') === 'toggle-'.$marker && $errors->has('text');
     $shown = array_slice(array_values(array_filter((array) $preference->evidence, 'is_int')), -5);
     $sources = collect($shown)->map(fn ($id) => $decisions->get($id))->filter();
 @endphp
@@ -9,11 +10,12 @@
         <div class="min-w-0 flex-1">
             <p class="text-sm font-medium break-words">{{ $preference->text }}</p>
             <p class="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-muted"><span>{{ $preference->lead?->name ?? 'All leads' }}</span><span class="status-badge">{{ $preference->source === 'learned' ? 'Learned' : 'Yours' }}</span>@if(! $off && $preference->isNew())<span class="status-badge status-review tag-new">New</span>@endif</p>
+            @if($toggleFailed)<p class="mt-2 text-xs text-[#a55d68]" role="alert">{{ $errors->first('text') }}</p>@endif
             @if($off && $preference->note)<p class="mt-2 text-xs text-muted">{{ $preference->note }}</p>@endif
         </div>
         <div class="flex flex-wrap items-center gap-2">
             <form action="{{ route('brain.update', $preference) }}" method="POST">@csrf
-                <input type="hidden" name="text" value="{{ $preference->text }}"><input type="hidden" name="lead" value="{{ $preference->lead?->key }}"><input type="hidden" name="status" value="{{ $off ? 'active' : 'off' }}">
+                <input type="hidden" name="brain_form" value="toggle-{{ $marker }}"><input type="hidden" name="status" value="{{ $off ? 'active' : 'off' }}">
                 <button class="button button-secondary button-small" type="submit">{{ $off ? 'Switch on' : 'Switch off' }}</button>
             </form>
             <form action="{{ route('brain.destroy', $preference) }}" method="POST">@csrf<button class="button button-quiet button-small" type="submit">Delete</button></form>
