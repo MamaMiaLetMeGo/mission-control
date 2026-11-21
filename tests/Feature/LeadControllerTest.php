@@ -2,10 +2,12 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\RunMissionTask;
 use App\Models\Lead;
 use App\Models\MissionTask;
 use Database\Seeders\LeadSeeder;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 class LeadControllerTest extends TestCase
@@ -35,6 +37,30 @@ class LeadControllerTest extends TestCase
 
         $this->assertFalse($lead->refresh()->is_active);
         $this->get(route('tasks.show', $task))->assertOk()->assertSee('Design Lead');
+    }
+
+    public function test_a_name_whose_key_would_exceed_fifty_characters_is_refused(): void
+    {
+        $this->post(route('leads.store'), ['name' => str_repeat('a', 51), 'instructions' => 'Own the long name.'])->assertSessionHasErrors('name');
+
+        $this->assertSame(4, Lead::query()->count());
+    }
+
+    public function test_a_task_of_a_deactivated_lead_can_still_be_started(): void
+    {
+        Queue::fake();
+        config(['mission.openai_api_key' => 'test-key-not-a-real-secret', 'mission.repository_path' => base_path(), 'mission.base_branch' => 'main', 'mission.worker_path' => base_path('artisan'), 'mission.test_command' => ['php', 'artisan', 'test']]);
+        $lead = Lead::query()->where('key', 'design')->sole();
+        $lead->update(['is_active' => false]);
+        $task = MissionTask::factory()->for($lead)->create();
+
+        $this->post(route('tasks.run', $task))->assertRedirect(route('tasks.show', $task))->assertSessionHasNoErrors();
+
+        $this->assertSame('queued', $task->refresh()->status);
+        $run = $task->runs()->sole();
+        $this->assertSame('queued', $run->status);
+        $this->assertSame('design', $run->role);
+        Queue::assertPushed(RunMissionTask::class, fn (RunMissionTask $job): bool => $job->runId === $run->id);
     }
 
     public function test_editing_a_lead_never_changes_its_key(): void

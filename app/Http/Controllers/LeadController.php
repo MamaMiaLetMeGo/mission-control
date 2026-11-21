@@ -17,6 +17,8 @@ class LeadController extends Controller
                 $key = Str::slug((string) $value);
                 if ($key === '') {
                     $fail('The name must include letters or numbers.');
+                } elseif (strlen($key) > 50) {
+                    $fail('Use a shorter name: its key can have at most 50 characters.');
                 } elseif (Lead::query()->where('key', $key)->exists()) {
                     $fail('A lead with this name already exists.');
                 }

@@ -276,6 +276,14 @@ test('a lead with empty instructions is rejected', async (t) => {
   assert.match(result.error, /lead/i);
 });
 
+test('lead limits count Unicode code points like the dashboard does', async (t) => {
+  const { input } = await fixture(t);
+  const astral = '\u{1F600}';
+  assert.doesNotThrow(() => validateInput({ ...input, lead: { name: astral.repeat(100), instructions: astral.repeat(4000) } }));
+  assert.throws(() => validateInput({ ...input, lead: { name: astral.repeat(101), instructions: 'x' } }), /lead/);
+  assert.throws(() => validateInput({ ...input, lead: { name: 'Design Lead', instructions: astral.repeat(4001) } }), /lead/);
+});
+
 test('phase events are tagged with the code, test and review stages in order', async (t) => {
   const { input } = await fixture(t);
   const events = [];

@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Models\AgentRun;
 use App\Services\CodexProcess;
+use App\Services\MissionWorkflow;
 use App\Services\RunSlots;
 use App\Services\TokenBudget;
 use DateTime;
@@ -86,7 +87,8 @@ class RunMissionTask implements ShouldQueue
                 $run->update($attributes);
             });
             $successful = ($result['success'] ?? false) === true && data_get($result, 'tests.exitCode') === 0 && data_get($result, 'review.verdict') === 'pass';
-            DB::transaction(function () use ($run, $result, $successful): void {
+            $noLongerApplies = ! $successful && ($run->settings['mode'] ?? null) === 'refresh' && ($result['error'] ?? null) === MissionWorkflow::REFRESH_CONFLICT;
+            DB::transaction(function () use ($run, $result, $successful, $noLongerApplies): void {
                 $currentRun = AgentRun::query()->lockForUpdate()->find($run->id);
                 $task = $run->task()->lockForUpdate()->first();
                 if (! $currentRun || $currentRun->status !== 'running' || $task->status !== 'running' || $task->runs()->value('id') !== $run->id) {
@@ -94,7 +96,7 @@ class RunMissionTask implements ShouldQueue
                 }
                 $run->update(['result' => $result, 'status' => $successful ? 'completed' : 'failed', 'usage' => $result['usage'] ?? $run->usage, 'finished_at' => now(), 'error' => $successful ? null : ($result['error'] ?? 'Verification did not pass. Review the evidence before retrying.')]);
                 $run->task->update([
-                    'status' => $successful ? 'review' : 'failed',
+                    'status' => $successful ? 'review' : ($noLongerApplies ? 'changes_requested' : 'failed'),
                     'recommendation' => $result['summary'] ?? null,
                     'review_data' => $result,
                     'branch' => $result['branch'] ?? null,

@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use Illuminate\Console\Attributes\Description;
 use Illuminate\Console\Attributes\Signature;
 use Illuminate\Console\Command;
+use Symfony\Component\Process\Exception\ExceptionInterface as ProcessException;
 use Symfony\Component\Process\Process;
 
 #[Signature('mission:listen {--processes=4 : Number of queue listeners to run (1-4)}')]
@@ -16,6 +17,11 @@ class MissionListenCommand extends Command
     private const RESTART_PAUSE_SECONDS = 1;
 
     private const STOP_GRACE_SECONDS = 3;
+
+    /**
+     * SIGTERM by number: the named constant exists only when the pcntl extension is loaded.
+     */
+    private const TERMINATE_SIGNAL = 15;
 
     private bool $stopRequested = false;
 
@@ -113,7 +119,11 @@ class MissionListenCommand extends Command
     {
         foreach ($children as $child) {
             if ($child->isRunning()) {
-                $child->signal(SIGTERM);
+                try {
+                    $child->signal(self::TERMINATE_SIGNAL);
+                } catch (ProcessException) {
+                    // The child exited between the check and the signal.
+                }
             }
         }
         $deadline = microtime(true) + self::STOP_GRACE_SECONDS;
@@ -121,9 +131,7 @@ class MissionListenCommand extends Command
             usleep(100_000);
         }
         foreach ($children as $child) {
-            if ($child->isRunning()) {
-                $child->stop(0, SIGKILL);
-            }
+            $child->stop(0);
         }
     }
 }

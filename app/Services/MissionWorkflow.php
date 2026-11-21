@@ -16,6 +16,20 @@ class MissionWorkflow
 
     public const REFRESH_TOKEN_LIMIT = 'The base moved and the daily token limit is reached. Refresh this task tomorrow or raise the limit.';
 
+    /**
+     * The worker's error when the reviewed change no longer applies to the moved base. The task then needs a new run.
+     */
+    public const REFRESH_CONFLICT = 'This change no longer applies to the current base. Run the task again.';
+
+    public const REFRESH_START_FAILED = 'The base moved, but the re-check could not start. Refresh this task to try again.';
+
+    /**
+     * Errors left on a reviewed task whose refresh did not start, so refreshing it by hand is the next step.
+     */
+    public const RETRYABLE_REFRESH_ERRORS = [self::REFRESH_TOKEN_LIMIT, self::REFRESH_START_FAILED];
+
+    private const DIFFERENT_TARGET = 'This task was reviewed against a different repository or base branch. Restore those Settings before refreshing it.';
+
     private const REFRESHABLE = ['review', 'approved', 'deferred'];
 
     public function __construct(private MissionSettings $settings, private GitRepository $git, private MissionPreview $previews, private BrowserEvidence $evidence, private TokenBudget $tokens) {}
@@ -61,6 +75,10 @@ class MissionWorkflow
         if (! $source) {
             $this->reject('Only reviewed or approved tasks with a revision can be refreshed.');
         }
+        $settings = $this->settings->all();
+        if (! $this->sameTarget($task->runs()->first()?->settings, $settings)) {
+            $this->reject(self::DIFFERENT_TARGET);
+        }
         if ($this->tokens->exhausted()) {
             $task->update(['error' => self::REFRESH_TOKEN_LIMIT]);
 
@@ -70,7 +88,7 @@ class MissionWorkflow
         if (! $readiness['ready']) {
             $this->reject(implode(' ', $readiness['issues']));
         }
-        $this->startRun($task, [...$this->settings->all(), 'mode' => 'refresh', ...$source]);
+        $this->startRun($task, [...$settings, 'mode' => 'refresh', ...$source]);
 
         return true;
     }
@@ -107,6 +125,23 @@ class MissionWorkflow
         $settings = $task->runs()->first()?->settings ?? [];
 
         return ($settings['mode'] ?? null) === 'refresh' && is_string($settings['source_revision'] ?? null) && preg_match('/^[a-f0-9]{40,64}$/', $settings['source_revision']) === 1;
+    }
+
+    /**
+     * Whether the run settings a task was reviewed with name the same repository and base branch as the given settings.
+     * Missing or unreadable settings never match.
+     *
+     * @param  array<string, mixed>|null  $reviewed
+     * @param  array<string, mixed>  $current
+     */
+    private function sameTarget(?array $reviewed, array $current): bool
+    {
+        if (! is_string($reviewed['repository_path'] ?? null) || ! is_string($current['repository_path'] ?? null) || ! is_string($reviewed['base_branch'] ?? null)) {
+            return false;
+        }
+        $repository = realpath($reviewed['repository_path']);
+
+        return $repository !== false && $repository === realpath($current['repository_path']) && $reviewed['base_branch'] === ($current['base_branch'] ?? null);
     }
 
     private function isRevision(mixed $revision): bool
@@ -244,19 +279,30 @@ class MissionWorkflow
                 $task->decisions()->create(['action' => 'merge', 'revision' => $task->revision, 'feedback' => 'Merged locally by explicit approval. Checkout: '.$checkout]);
                 $task->update(['status' => 'merged']);
             });
-            $this->refreshOthersAfterMerge($task, $this->git->command($checkout, ['rev-parse', '--verify', 'refs/heads/'.$run->settings['base_branch']]));
+            $this->refreshOthersAfterMerge($task, $checkout, $run->settings);
         });
     }
 
     /**
-     * Refresh every other reviewed or approved task that was reviewed against an older base. A refresh that cannot start
-     * for any reason leaves its task where it is with a short reason, so a recorded merge never ends in an exception.
+     * Refresh every other reviewed or approved task that was reviewed against an older base of the same repository and
+     * base branch. A refresh that cannot start for any reason leaves its task where it is with a short reason, and a base
+     * that cannot be read is reported, so a recorded merge never ends in an exception.
+     *
+     * @param  array<string, mixed>  $mergedSettings
      */
-    private function refreshOthersAfterMerge(MissionTask $merged, string $baseHead): void
+    private function refreshOthersAfterMerge(MissionTask $merged, string $checkout, array $mergedSettings): void
     {
+        try {
+            $baseHead = $this->git->command($checkout, ['rev-parse', '--verify', 'refs/heads/'.$mergedSettings['base_branch']]);
+        } catch (Throwable $exception) {
+            report($exception);
+
+            return;
+        }
         $stale = MissionTask::query()->whereKeyNot($merged->id)->whereIn('status', ['review', 'approved'])->whereNotNull('revision')
             ->where(fn ($query) => $query->whereNull('base_revision')->orWhere('base_revision', '!=', $baseHead))
-            ->orderBy('id')->get();
+            ->with('runs')->orderBy('id')->get()
+            ->filter(fn (MissionTask $task): bool => $this->sameTarget($task->runs->first()?->settings, $mergedSettings));
         foreach ($stale as $task) {
             try {
                 $this->refreshWhileLocked($task);
@@ -264,7 +310,7 @@ class MissionWorkflow
                 $task->update(['error' => collect($exception->errors())->flatten()->first()]);
             } catch (Throwable $exception) {
                 report($exception);
-                $task->update(['error' => 'The base moved, but the re-check could not start. Refresh this task to try again.']);
+                $task->update(['error' => self::REFRESH_START_FAILED]);
             }
         }
     }

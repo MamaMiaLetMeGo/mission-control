@@ -23,7 +23,7 @@ class MissionRefreshTest extends TestCase
         $this->readyEnvironment();
         config(['mission.daily_token_limit' => 10000]);
         AgentRun::factory()->create(['status' => 'completed', 'usage' => ['input_tokens' => 8000, 'output_tokens' => 2000]]);
-        $task = MissionTask::factory()->readyForReview()->create(['status' => 'approved']);
+        $task = $this->reviewedTask(['status' => 'approved']);
 
         $queued = app(MissionWorkflow::class)->refresh($task);
 
@@ -32,7 +32,7 @@ class MissionRefreshTest extends TestCase
         $this->assertSame('approved', $task->status);
         $this->assertSame(str_repeat('a', 40), $task->revision);
         $this->assertSame('The base moved and the daily token limit is reached. Refresh this task tomorrow or raise the limit.', $task->error);
-        $this->assertSame(0, $task->runs()->count());
+        $this->assertSame(1, $task->runs()->count());
         Queue::assertNothingPushed();
     }
 
@@ -41,7 +41,7 @@ class MissionRefreshTest extends TestCase
         Queue::fake();
         $this->readyEnvironment();
         config(['mission.openai_api_key' => 'test-key-not-a-real-secret']);
-        $task = MissionTask::factory()->readyForReview()->create(['status' => 'approved', 'recommendation' => 'Improved the lesson.']);
+        $task = $this->reviewedTask(['status' => 'approved', 'recommendation' => 'Improved the lesson.']);
         $oldRevision = $task->revision;
         $task->decisions()->create(['action' => 'approve', 'revision' => $oldRevision]);
 
@@ -77,7 +77,7 @@ class MissionRefreshTest extends TestCase
         $this->post(route('tasks.run', $task))->assertSessionHasNoErrors();
 
         $this->assertSame('queued', $task->refresh()->status);
-        $reviewed = MissionTask::factory()->readyForReview()->create();
+        $reviewed = $this->reviewedTask();
         $this->assertTrue(app(MissionWorkflow::class)->refresh($reviewed));
         $this->assertSame('queued', $reviewed->refresh()->status);
         $this->post(route('tasks.run', MissionTask::factory()->create()))->assertSessionHasErrors(['task' => 'The daily run limit has been reached. Increase it in Settings or wait until tomorrow.']);
@@ -104,7 +104,7 @@ class MissionRefreshTest extends TestCase
     {
         Queue::fake();
         $this->readyEnvironment();
-        $task = MissionTask::factory()->readyForReview()->create(['error' => 'The base moved and the daily token limit is reached. Refresh this task tomorrow or raise the limit.']);
+        $task = $this->reviewedTask(['error' => 'The base moved and the daily token limit is reached. Refresh this task tomorrow or raise the limit.']);
         $revision = $task->revision;
 
         $response = $this->post(route('tasks.refresh', $task));
@@ -137,8 +137,8 @@ class MissionRefreshTest extends TestCase
     {
         Queue::fake();
         $this->readyEnvironment();
-        $untitled = MissionTask::factory()->readyForReview()->create(['title' => 'Tidy the lesson page', 'recommendation' => null]);
-        $long = MissionTask::factory()->readyForReview()->create(['recommendation' => str_repeat('é', 25000)]);
+        $untitled = $this->reviewedTask(['title' => 'Tidy the lesson page', 'recommendation' => null]);
+        $long = $this->reviewedTask(['recommendation' => str_repeat('é', 25000)]);
 
         app(MissionWorkflow::class)->refresh($untitled);
         app(MissionWorkflow::class)->refresh($long);
@@ -153,7 +153,7 @@ class MissionRefreshTest extends TestCase
         $this->freezeTime();
         $this->readyEnvironment();
         config(['mission.daily_token_limit' => 10000]);
-        $task = MissionTask::factory()->readyForReview()->create(['status' => 'approved', 'recommendation' => 'Improved the lesson.']);
+        $task = $this->reviewedTask(['status' => 'approved', 'recommendation' => 'Improved the lesson.']);
         $reviewedRevision = $task->revision;
         $this->assertTrue(app(MissionWorkflow::class)->refresh($task));
         $spent = AgentRun::factory()->create(['status' => 'completed', 'usage' => ['input_tokens' => 8000, 'output_tokens' => 2000]]);
@@ -170,7 +170,7 @@ class MissionRefreshTest extends TestCase
         $this->assertFalse(app(MissionWorkflow::class)->refresh($task));
         $this->assertSame('failed', $task->refresh()->status);
         $this->assertSame('The base moved and the daily token limit is reached. Refresh this task tomorrow or raise the limit.', $task->error);
-        $this->assertSame(1, $task->runs()->count());
+        $this->assertSame(2, $task->runs()->count());
         $spent->update(['usage' => null]);
 
         $this->assertTrue(app(MissionWorkflow::class)->refresh($task));
@@ -178,7 +178,7 @@ class MissionRefreshTest extends TestCase
         $task->refresh();
         $this->assertSame('queued', $task->status);
         $settings = $task->runs()->first()->settings;
-        $this->assertSame(2, $task->runs()->count());
+        $this->assertSame(3, $task->runs()->count());
         $this->assertSame('refresh', $settings['mode']);
         $this->assertSame($reviewedRevision, $settings['source_revision']);
         $this->assertSame('Improved the lesson.', $settings['previous_summary']);
@@ -209,12 +209,14 @@ class MissionRefreshTest extends TestCase
         $refreshing = MissionTask::factory()->create(['status' => 'queued']);
         AgentRun::factory()->for($refreshing, 'task')->create(['settings' => ['mode' => 'refresh', 'source_revision' => str_repeat('a', 40), 'previous_summary' => 'Earlier work.']]);
         $flagged = MissionTask::factory()->readyForReview()->create(['error' => 'The base moved and the daily token limit is reached. Refresh this task tomorrow or raise the limit.']);
-        $failedRefresh = MissionTask::factory()->create(['status' => 'failed', 'error' => 'This change no longer applies to the current base. Run the task again.']);
+        $failedRefresh = MissionTask::factory()->create(['status' => 'failed', 'error' => 'The worker was interrupted.']);
         AgentRun::factory()->for($failedRefresh, 'task')->create(['status' => 'failed', 'settings' => ['mode' => 'refresh', 'source_revision' => str_repeat('a', 40), 'previous_summary' => 'Earlier work.']]);
         $failedNormal = MissionTask::factory()->create(['status' => 'failed', 'error' => 'Verification did not pass.']);
         AgentRun::factory()->for($failedNormal, 'task')->create(['status' => 'failed']);
         $otherError = MissionTask::factory()->readyForReview()->create(['error' => 'Build the Codex worker before starting a task.']);
         $ordinary = MissionTask::factory()->readyForReview()->create();
+        $startFailed = MissionTask::factory()->readyForReview()->create(['status' => 'approved', 'error' => 'The base moved, but the re-check could not start. Refresh this task to try again.']);
+        $startFailedWithoutRevision = MissionTask::factory()->create(['status' => 'changes_requested', 'error' => 'The base moved, but the re-check could not start. Refresh this task to try again.']);
 
         $this->get(route('tasks.show', $refreshing))->assertOk()->assertSee('Re-checking against the updated base');
         $this->get(route('tasks.show', $flagged))->assertOk()->assertSee('Refresh against current base')->assertSee(route('tasks.refresh', $flagged), false);
@@ -222,6 +224,51 @@ class MissionRefreshTest extends TestCase
         $this->get(route('tasks.show', $failedNormal))->assertOk()->assertDontSee('Refresh against current base');
         $this->get(route('tasks.show', $otherError))->assertOk()->assertDontSee('Refresh against current base');
         $this->get(route('tasks.show', $ordinary))->assertOk()->assertDontSee('Refresh against current base')->assertDontSee('Re-checking against the updated base');
+        $this->get(route('tasks.show', $startFailed))->assertOk()->assertSee('Refresh against current base')->assertSee(route('tasks.refresh', $startFailed), false);
+        $this->get(route('tasks.show', $startFailedWithoutRevision))->assertOk()->assertDontSee('Refresh against current base');
+    }
+
+    public function test_a_refresh_that_no_longer_applies_asks_for_a_new_run_instead_of_another_refresh(): void
+    {
+        Queue::fake();
+        $this->readyEnvironment();
+        $task = $this->reviewedTask(['status' => 'approved', 'recommendation' => 'Improved the lesson.']);
+        $this->assertTrue(app(MissionWorkflow::class)->refresh($task));
+        $run = $task->runs()->first();
+        $conflict = 'This change no longer applies to the current base. Run the task again.';
+        $worker = $this->mock(CodexProcess::class, function ($mock) use ($conflict): void {
+            $mock->shouldReceive('run')->once()->andReturn(['type' => 'result', 'success' => false, 'error' => $conflict, 'revision' => '', 'baseRevision' => str_repeat('d', 40)]);
+        });
+
+        (new RunMissionTask($run->id))->handle($worker);
+
+        $task->refresh();
+        $this->assertSame('changes_requested', $task->status);
+        $this->assertSame($conflict, $task->error);
+        $this->assertSame('failed', $run->refresh()->status);
+        $this->assertSame($conflict, $run->error);
+        $this->get(route('tasks.show', $task))->assertOk()->assertSee($conflict)->assertSee('Start a new run')->assertDontSee('Refresh against current base');
+
+        app(MissionWorkflow::class)->queue($task);
+
+        $this->assertSame('queued', $task->refresh()->status);
+        $this->assertSame(3, $task->runs()->count());
+        $settings = $task->runs()->first()->settings;
+        $this->assertArrayNotHasKey('mode', $settings);
+        $this->assertArrayNotHasKey('source_revision', $settings);
+    }
+
+    /**
+     * A reviewed task with the run that produced it, against the ready environment's repository and base branch.
+     *
+     * @param  array<string, mixed>  $attributes
+     */
+    private function reviewedTask(array $attributes = []): MissionTask
+    {
+        $task = MissionTask::factory()->readyForReview()->create($attributes);
+        AgentRun::factory()->for($task, 'task')->create(['status' => 'completed', 'settings' => ['repository_path' => base_path(), 'base_branch' => 'main']]);
+
+        return $task;
     }
 
     private function readyEnvironment(): void

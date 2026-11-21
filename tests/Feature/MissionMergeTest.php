@@ -7,10 +7,13 @@ use App\Models\AgentRun;
 use App\Models\MissionTask;
 use App\Services\GitRepository;
 use App\Services\MissionPreview;
+use App\Services\MissionWorkflow;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Facades\Exceptions;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use RuntimeException;
 use Symfony\Component\Process\Process;
 use Tests\TestCase;
@@ -184,6 +187,93 @@ class MissionMergeTest extends TestCase
         $this->assertSame('The base moved, but the re-check could not start. Refresh this task to try again.', $broken->error);
         $this->assertSame('queued', $healthy->refresh()->status);
         Queue::assertPushed(RunMissionTask::class, 1);
+    }
+
+    public function test_a_merge_leaves_a_task_reviewed_against_another_base_branch_untouched(): void
+    {
+        Queue::fake();
+        [$task, $repository] = $this->reviewedTask();
+        $this->readyToRefresh();
+        $task->update(['status' => 'approved']);
+        $this->git($repository, ['branch', 'release', $task->base_revision]);
+        $release = $this->anotherReviewedTask($repository, $task->base_revision, 'review', 'release-work', 'release');
+        $releaseRevision = $release->revision;
+
+        $this->post(route('tasks.merge', $task), ['revision' => $task->revision])->assertSessionHasNoErrors();
+
+        $this->assertSame('merged', $task->refresh()->status);
+        $release->refresh();
+        $this->assertSame('review', $release->status);
+        $this->assertSame($releaseRevision, $release->revision);
+        $this->assertNull($release->error);
+        $this->assertSame(1, $release->runs()->count());
+        Queue::assertNothingPushed();
+
+        try {
+            app(MissionWorkflow::class)->refresh($release);
+            $this->fail('A task reviewed against another base branch must not be refreshed onto the configured one.');
+        } catch (ValidationException $exception) {
+            $this->assertSame('This task was reviewed against a different repository or base branch. Restore those Settings before refreshing it.', $exception->errors()['task'][0]);
+        }
+        $release->refresh();
+        $this->assertSame('review', $release->status);
+        $this->assertSame($releaseRevision, $release->revision);
+        $this->assertNull($release->error);
+        $this->assertSame(1, $release->runs()->count());
+        Queue::assertNothingPushed();
+    }
+
+    public function test_a_merge_whose_new_base_cannot_be_read_still_succeeds_and_reports_the_failure(): void
+    {
+        Queue::fake();
+        Exceptions::fake();
+        [$task, $repository] = $this->reviewedTask();
+        $this->readyToRefresh();
+        $task->update(['status' => 'approved']);
+        $other = $this->anotherReviewedTask($repository, $task->base_revision, 'approved');
+        $git = app(GitRepository::class);
+        $this->partialMock(GitRepository::class, function ($mock) use ($git, $task): void {
+            $mock->shouldReceive('command')->andReturnUsing(function (string $directory, array $arguments, bool $network = false) use ($git, $task): string {
+                if ($arguments === ['rev-parse', '--verify', 'refs/heads/main'] && $task->fresh()->status === 'merged') {
+                    throw new RuntimeException('The base branch could not be read.');
+                }
+
+                return $git->command($directory, $arguments, $network);
+            });
+        });
+
+        $response = $this->post(route('tasks.merge', $task), ['revision' => $task->revision]);
+
+        $response->assertRedirect(route('tasks.show', $task));
+        $response->assertSessionHasNoErrors();
+        $this->assertSame('merged', $task->refresh()->status);
+        $this->assertSame($task->revision, $this->git($repository, ['rev-parse', 'HEAD']));
+        $this->assertSame('approved', $other->refresh()->status);
+        Exceptions::assertReported(fn (RuntimeException $exception): bool => $exception->getMessage() === 'The base branch could not be read.');
+        Queue::assertNothingPushed();
+    }
+
+    public function test_a_merge_while_the_daily_token_limit_is_reached_flags_the_other_reviewed_task_without_queueing_it(): void
+    {
+        Queue::fake();
+        $this->freezeTime();
+        [$task, $repository] = $this->reviewedTask();
+        $this->readyToRefresh();
+        config(['mission.daily_token_limit' => 10000]);
+        $task->update(['status' => 'approved']);
+        $other = $this->anotherReviewedTask($repository, $task->base_revision, 'approved');
+        $otherRevision = $other->revision;
+        AgentRun::factory()->create(['status' => 'completed', 'usage' => ['input_tokens' => 8000, 'output_tokens' => 2000]]);
+
+        $this->post(route('tasks.merge', $task), ['revision' => $task->revision])->assertSessionHasNoErrors();
+
+        $this->assertSame('merged', $task->refresh()->status);
+        $other->refresh();
+        $this->assertSame('approved', $other->status);
+        $this->assertSame($otherRevision, $other->revision);
+        $this->assertSame('The base moved and the daily token limit is reached. Refresh this task tomorrow or raise the limit.', $other->error);
+        $this->assertSame(1, $other->runs()->count());
+        Queue::assertNothingPushed();
     }
 
     public function test_merging_does_not_refresh_a_task_already_reviewed_against_the_new_base(): void
@@ -456,7 +546,7 @@ class MissionMergeTest extends TestCase
         return $this->git($repository, ['rev-parse', 'HEAD']);
     }
 
-    private function anotherReviewedTask(string $repository, string $baseRevision, string $status, string $name = 'other'): MissionTask
+    private function anotherReviewedTask(string $repository, string $baseRevision, string $status, string $name = 'other', string $baseBranch = 'main'): MissionTask
     {
         $worktree = config('mission.worktree_root').'/'.$name;
         $this->git($repository, ['worktree', 'add', '-b', 'mission/'.$name, $worktree, $baseRevision]);
@@ -465,7 +555,7 @@ class MissionMergeTest extends TestCase
         $this->git($worktree, ['commit', '-m', 'Parallel work']);
         $task = MissionTask::factory()->readyForReview()->create(['status' => $status, 'revision' => $this->git($worktree, ['rev-parse', 'HEAD']), 'base_revision' => $baseRevision, 'worktree_path' => $worktree, 'branch' => 'mission/'.$name]);
         $task->update(['recommendation' => 'Earlier summary for '.$task->title]);
-        AgentRun::factory()->for($task, 'task')->create(['status' => 'completed', 'settings' => ['repository_path' => $repository, 'base_branch' => 'main']]);
+        AgentRun::factory()->for($task, 'task')->create(['status' => 'completed', 'settings' => ['repository_path' => $repository, 'base_branch' => $baseBranch]]);
 
         return $task;
     }

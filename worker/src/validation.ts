@@ -40,8 +40,8 @@ export function validateInput(value: unknown): MissionInput {
   if (input.lead !== undefined) {
     const lead = input.lead as Record<string, unknown>;
     if (!lead || typeof lead !== 'object' || Array.isArray(lead)
-      || typeof lead.name !== 'string' || !lead.name.trim() || lead.name.length > 100 || lead.name.includes('\0')
-      || typeof lead.instructions !== 'string' || !lead.instructions.trim() || lead.instructions.length > 4000 || lead.instructions.includes('\0')) {
+      || typeof lead.name !== 'string' || !lead.name.trim() || codePoints(lead.name) > 100 || lead.name.includes('\0')
+      || typeof lead.instructions !== 'string' || !lead.instructions.trim() || codePoints(lead.instructions) > 4000 || lead.instructions.includes('\0')) {
       throw new Error('lead must have a name (max 100 characters) and instructions (max 4000 characters).');
     }
   }
@@ -68,6 +68,13 @@ export function validateInput(value: unknown): MissionInput {
     if (preview.enabled) validatePreviewConfig(input.preview as PreviewConfig);
   }
   return input as unknown as MissionInput;
+}
+
+/**
+ * Counts Unicode code points, as Laravel's `max:` rule does, so a value the dashboard accepts is accepted here too.
+ */
+function codePoints(value: string): number {
+  return [...value].length;
 }
 
 export function validateReview(value: unknown): Review {

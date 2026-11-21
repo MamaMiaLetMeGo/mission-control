@@ -4,6 +4,8 @@ namespace Tests\Feature;
 
 use App\Console\Commands\MissionListenCommand;
 use PHPUnit\Framework\Attributes\DataProvider;
+use ReflectionMethod;
+use Symfony\Component\Process\Process;
 use Tests\TestCase;
 
 class MissionListenCommandTest extends TestCase
@@ -28,6 +30,29 @@ class MissionListenCommandTest extends TestCase
         $this->artisan('mission:listen', ['--processes' => $count])
             ->expectsOutputToContain('between 1 and 4')
             ->assertExitCode(1);
+    }
+
+    public function test_stopping_terminates_children_and_kills_one_that_ignores_the_request_after_the_grace_period(): void
+    {
+        $polite = new Process([PHP_BINARY, '-r', 'sleep(30);']);
+        $stubborn = new Process([PHP_BINARY, '-r', 'pcntl_async_signals(true); pcntl_signal(15, SIG_IGN); echo "ready\n"; sleep(30);']);
+        $polite->start();
+        $stubborn->start();
+        try {
+            $stubborn->waitUntil(fn (string $type, string $output): bool => str_contains($output, 'ready'));
+            $startedAt = microtime(true);
+
+            (new ReflectionMethod(MissionListenCommand::class, 'stopChildren'))->invoke(new MissionListenCommand, [$polite, $stubborn]);
+
+            $elapsed = microtime(true) - $startedAt;
+            $this->assertFalse($polite->isRunning());
+            $this->assertFalse($stubborn->isRunning());
+            $this->assertGreaterThanOrEqual(3, $elapsed);
+            $this->assertLessThan(6, $elapsed);
+        } finally {
+            $polite->stop(0);
+            $stubborn->stop(0);
+        }
     }
 
     /**
