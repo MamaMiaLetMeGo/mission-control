@@ -46,7 +46,7 @@ class MissionSettingController extends Controller
             'test_command' => ['present', 'array', 'list', 'max:30'],
             'test_command.*' => ['required', 'string', 'max:2000', 'not_regex:/\x00/'],
             'max_runtime_seconds' => ['required', 'integer', 'min:60', 'max:720'],
-            'max_tokens' => ['required', 'integer', 'min:1000', 'max:500000'],
+            'max_tokens' => ['required', 'integer', 'min:1000', 'max:1000000'],
             'daily_run_limit' => ['required', 'integer', 'min:1', 'max:100'],
             'max_parallel_runs' => ['required', 'integer', 'min:1', 'max:4'],
             'auto_start' => ['required', 'boolean'],

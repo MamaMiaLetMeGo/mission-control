@@ -167,6 +167,14 @@ class MissionSettingControllerTest extends TestCase
         return ['negative' => [-1], 'too many' => [4], 'fraction' => [1.5], 'missing' => ['']];
     }
 
+    public function test_per_run_token_allowance_accepts_up_to_one_million(): void
+    {
+        $this->post(route('settings.update'), [...$this->payload(), 'max_tokens' => '1000000'])->assertRedirect(route('settings.edit'));
+        $this->assertSame(1000000, app(MissionSettings::class)->all()['max_tokens']);
+
+        $this->post(route('settings.update'), [...$this->payload(), 'max_tokens' => '1000001'])->assertSessionHasErrors('max_tokens');
+    }
+
     public function test_settings_page_shows_the_review_rounds_field(): void
     {
         $this->get(route('settings.edit'))->assertOk()->assertSee('Review fix rounds')->assertSee("How many times a sub-agent may fix the reviewer's findings before the run stops for you.", false)->assertSee('name="review_rounds"', false);
