@@ -8,6 +8,8 @@
     $canRequestChanges = in_array($task->status, ['review', 'approved', 'failed']);
     $latestRun = $task->runs->first();
     $runSettings = $latestRun?->settings ?? [];
+    $isRefreshing = in_array($task->status, ['queued', 'running'], true) && ($runSettings['mode'] ?? null) === 'refresh';
+    $canRetryRefresh = in_array($task->status, ['review', 'approved', 'deferred'], true) && $task->revision && $task->error;
     $browser = $review['browser'] ?? [];
     $captureRequested = (bool) ($runSettings['preview_enabled'] ?? false);
     $captures = collect($browser['screenshots'] ?? [])->filter(fn ($capture) => is_array($capture) && isset($capture['file'], $capture['path'], $capture['phase'], $capture['viewport']) && in_array($capture['phase'], ['before', 'after'], true) && in_array($capture['viewport'], ['desktop', 'mobile'], true));
@@ -41,7 +43,7 @@
     @php
         $latestPhase = collect($latestRun?->events ?? [])->last(fn ($event) => ($event['type'] ?? null) === 'phase');
     @endphp
-    <div class="notice mb-6"><span class="shrink-0">@include('mission.icon', ['name' => 'clock', 'class' => 'size-4'])</span><p>{{ $latestPhase['message'] ?? ($task->status === 'queued' ? 'Waiting for the local worker to start.' : 'Your team is working on this task.') }}</p></div>
+    <div class="notice mb-6"><span class="shrink-0">@include('mission.icon', ['name' => 'clock', 'class' => 'size-4'])</span><div>@if($isRefreshing)<strong class="block mb-1">Re-checking against the updated base</strong>@endif<p>{{ $latestPhase['message'] ?? ($task->status === 'queued' ? 'Waiting for the local worker to start.' : 'Your team is working on this task.') }}</p></div></div>
 @endif
 </div>
 @if($task->error)<div class="notice notice-error mb-6" role="alert"><span class="shrink-0">@include('mission.icon', ['name' => 'alert'])</span><div><strong class="block mb-1">This task needs attention</strong><p class="whitespace-pre-wrap break-words">{{ $task->error }}</p></div></div>@endif
@@ -161,6 +163,10 @@ No run events recorded.
                 <span class="success-icon">@include('mission.icon', ['name' => 'check'])</span><strong class="text-sm">Merged locally</strong><p class="text-sm text-muted leading-relaxed">This task’s approved changes are now on the local base branch.</p>
             @elseif($task->status === 'rejected')
                 <strong class="text-sm">Task closed</strong><p class="text-sm text-muted leading-relaxed">Your decision and feedback are preserved in the journal.</p>
+            @endif
+            @if($canRetryRefresh)
+                <form method="POST" action="{{ route('tasks.refresh', $task) }}">@csrf<button type="submit" class="button button-secondary w-full" @disabled(! ($readiness['ready'] ?? false))>@include('mission.icon', ['name' => 'refresh', 'class' => 'size-4'])Refresh against current base</button></form>
+                <p class="text-xs text-muted leading-relaxed">Replays this revision onto the current base and tests and reviews it again. The refreshed revision needs a new approval.</p>
             @endif
             @if($canApprove)
                 <div><p class="eyebrow">Decision needed</p><h3 class="text-lg font-semibold tracking-tight">Ready to approve?</h3><p class="text-sm text-muted leading-relaxed mt-2">Review the evidence and approve this revision for a local merge.</p></div>

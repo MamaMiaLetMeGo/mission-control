@@ -97,14 +97,33 @@ class GitRepository
         return ['ref' => $upstream['ref'], 'revision' => $this->command($repository, ['rev-parse', '--verify', $upstream['ref'].'^{commit}'])];
     }
 
-    /** @param array<string, mixed> $settings */
-    public function assertBaseRevision(MissionTask $task, array $settings, bool $allowAlreadyMerged = false): void
+    /**
+     * Whether the local base branch no longer points at the revision this task was reviewed against.
+     *
+     * @param  array<string, mixed>  $settings
+     */
+    public function baseMoved(MissionTask $task, array $settings, bool $allowAlreadyMerged = false): bool
     {
-        $repository = $settings['repository_path'];
-        $base = $this->command($repository, ['rev-parse', '--verify', 'refs/heads/'.$settings['base_branch']]);
-        if ($base !== $task->base_revision && (! $allowAlreadyMerged || $base !== $task->revision)) {
-            $this->invalidate($task, 'The base branch changed after this task started. Run the task again against the new base before approval or merging.');
+        $base = $this->baseHead($settings);
+
+        return $base !== $task->base_revision && (! $allowAlreadyMerged || $base !== $task->revision);
+    }
+
+    /**
+     * Refuse when the base moved or the upstream changed since this task started.
+     *
+     * A moved local base marks the task `changes_requested` unless `$invalidateWhenMoved` is false, in which case it only
+     * throws so the caller can decide what happens next. A changed upstream always marks the task `changes_requested`.
+     *
+     * @param  array<string, mixed>  $settings
+     */
+    public function assertBaseRevision(MissionTask $task, array $settings, bool $allowAlreadyMerged = false, bool $invalidateWhenMoved = true): void
+    {
+        if ($this->baseMoved($task, $settings, $allowAlreadyMerged)) {
+            $this->refuseMovedBase($task, 'The base branch changed after this task started. Run the task again against the new base before approval or merging.', $invalidateWhenMoved);
         }
+        $repository = $settings['repository_path'];
+        $base = $this->baseHead($settings);
         $previous = $settings['remote_snapshot'] ?? null;
         if (is_array($previous)) {
             $current = $this->remoteSnapshot($repository, $settings['base_branch']);
@@ -113,6 +132,20 @@ class GitRepository
                 $this->invalidate($task, 'The upstream changed after this task started. Sync the base and run the task again before approval or merging.');
             }
         }
+    }
+
+    /** @param array<string, mixed> $settings */
+    private function baseHead(array $settings): string
+    {
+        return $this->command($settings['repository_path'], ['rev-parse', '--verify', 'refs/heads/'.$settings['base_branch']]);
+    }
+
+    private function refuseMovedBase(MissionTask $task, string $message, bool $invalidate): never
+    {
+        if ($invalidate) {
+            $this->invalidate($task, $message);
+        }
+        throw ValidationException::withMessages(['task' => $message]);
     }
 
     public function assertReviewedRevision(MissionTask $task): void
@@ -133,10 +166,14 @@ class GitRepository
         }
     }
 
-    /** @param array<string, mixed> $settings
+    /**
+     * Fast-forward the base to the reviewed revision. A moved local base marks the task `changes_requested` unless
+     * `$invalidateWhenBaseMoved` is false; tampering with the reviewed worktree or branch, or a changed remote, always does.
+     *
+     * @param  array<string, mixed>  $settings
      * @param  array<string, mixed>|null  $destination
      */
-    public function merge(MissionTask $task, array $settings, ?array $destination = null): string
+    public function merge(MissionTask $task, array $settings, ?array $destination = null, bool $invalidateWhenBaseMoved = true): string
     {
         $this->assertReviewedRevision($task);
         $destination ??= $settings;
@@ -152,7 +189,7 @@ class GitRepository
             throw ValidationException::withMessages(['task' => 'The repository has uncommitted changes. Resolve them before merging.']);
         }
         $this->assertSameRepository($repository, $settings['repository_path'], $task->worktree_path);
-        $this->assertBaseRevision($task, $settings, true);
+        $this->assertBaseRevision($task, $settings, true, $invalidateWhenBaseMoved);
         $currentRevision = $this->command($repository, ['rev-parse', 'HEAD']);
         if ($this->upstream($repository, $base)) {
             $remote = $this->fetchUpstream($repository, $base);
@@ -169,7 +206,7 @@ class GitRepository
             return $repository;
         }
         if ($currentRevision !== $task->base_revision) {
-            $this->invalidate($task, 'The base branch changed after this task started. Run the task again against the new base before merging.');
+            $this->refuseMovedBase($task, 'The base branch changed after this task started. Run the task again against the new base before merging.', $invalidateWhenBaseMoved);
         }
         $this->command($repository, ['merge', '--ff-only', '--no-edit', '--no-overwrite-ignore', $task->revision]);
 

@@ -29,6 +29,7 @@ Route::post('/tasks/{task}/preview', [MissionPreviewController::class, 'store'])
 Route::post('/tasks/{task}/preview/stop', [MissionPreviewController::class, 'destroy'])->name('tasks.preview.stop');
 Route::get('/tasks/{task}/preview/status', [MissionPreviewController::class, 'status'])->name('tasks.preview.status');
 Route::post('/tasks/{task}/run', [MissionTaskController::class, 'run'])->name('tasks.run');
+Route::post('/tasks/{task}/refresh', [MissionTaskController::class, 'refresh'])->name('tasks.refresh');
 Route::post('/tasks/{task}/decisions', [MissionTaskController::class, 'decide'])->name('tasks.decide');
 Route::post('/tasks/{task}/merge', [MissionTaskController::class, 'merge'])->name('tasks.merge');
 Route::post('/tasks/{task}/publication', [StagingPublicationController::class, 'publish'])->name('tasks.publish');

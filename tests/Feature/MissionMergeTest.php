@@ -2,11 +2,13 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\RunMissionTask;
 use App\Models\AgentRun;
 use App\Models\MissionTask;
 use App\Services\GitRepository;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Symfony\Component\Process\Process;
 use Tests\TestCase;
@@ -89,20 +91,104 @@ class MissionMergeTest extends TestCase
         $this->assertSame($task->base_revision, $this->git($repository, ['rev-parse', 'HEAD']));
     }
 
-    public function test_a_changed_base_invalidates_the_old_approval(): void
+    public function test_merging_against_a_moved_base_starts_a_refresh_instead_of_discarding_the_work(): void
     {
+        Queue::fake();
         [$task, $repository] = $this->reviewedTask();
+        $this->readyToRefresh();
+        $task->update(['status' => 'approved', 'recommendation' => 'Improved the lesson.']);
+        $reviewedRevision = $task->revision;
+        $newBase = $this->commitToBase($repository, 'other.txt', "Another feature\n");
+
+        $response = $this->post(route('tasks.merge', $task), ['revision' => $reviewedRevision]);
+
+        $response->assertSessionHasErrors(['task' => 'The base moved, so this change is being re-checked against it. Review the refreshed revision when it is ready.']);
+        $this->assertSame('queued', $task->refresh()->status);
+        $this->assertNull($task->revision);
+        $this->assertSame($newBase, $this->git($repository, ['rev-parse', 'HEAD']));
+        $this->assertSame(['refresh', $reviewedRevision, 'Improved the lesson.'], [$task->runs()->first()->settings['mode'], $task->runs()->first()->settings['source_revision'], $task->runs()->first()->settings['previous_summary']]);
+        $this->assertDatabaseMissing('decisions', ['mission_task_id' => $task->id, 'action' => 'merge']);
+        Queue::assertPushed(RunMissionTask::class, 1);
+    }
+
+    public function test_tampering_after_review_still_invalidates_a_merge_even_when_the_base_also_moved(): void
+    {
+        Queue::fake();
+        [$task, $repository, $worktree] = $this->reviewedTask();
+        $this->readyToRefresh();
         $task->update(['status' => 'approved']);
-        file_put_contents($repository.'/other.txt', "Another feature\n");
-        $this->git($repository, ['add', 'other.txt']);
-        $this->git($repository, ['commit', '-m', 'Other work']);
-        $newBase = $this->git($repository, ['rev-parse', 'HEAD']);
+        $this->commitToBase($repository, 'other.txt', "Another feature\n");
+        file_put_contents($worktree.'/lesson.txt', "Changed after review\n");
+
+        $this->post(route('tasks.merge', $task), ['revision' => $task->revision])->assertSessionHasErrors('task');
+
+        $this->assertSame('changes_requested', $task->refresh()->status);
+        $this->assertSame(1, $task->runs()->count());
+        Queue::assertNothingPushed();
+    }
+
+    public function test_merging_one_task_queues_a_refresh_for_other_reviewed_tasks(): void
+    {
+        Queue::fake();
+        [$task, $repository] = $this->reviewedTask();
+        $this->readyToRefresh();
+        $task->update(['status' => 'approved']);
+        $other = $this->anotherReviewedTask($repository, $task->base_revision, 'approved');
+        $otherRevision = $other->revision;
+        $waiting = $this->anotherReviewedTask($repository, $task->base_revision, 'review', 'second');
+        $waitingRevision = $waiting->revision;
+        $unrelated = MissionTask::factory()->create(['status' => 'changes_requested']);
 
         $response = $this->post(route('tasks.merge', $task), ['revision' => $task->revision]);
 
-        $response->assertSessionHasErrors('task');
-        $this->assertSame('changes_requested', $task->refresh()->status);
-        $this->assertSame($newBase, $this->git($repository, ['rev-parse', 'HEAD']));
+        $response->assertRedirect(route('tasks.show', $task));
+        $response->assertSessionHasNoErrors();
+        $this->assertSame('merged', $task->refresh()->status);
+        $this->assertSame($task->revision, $this->git($repository, ['rev-parse', 'HEAD']));
+        foreach ([[$other, $otherRevision], [$waiting, $waitingRevision]] as [$refreshed, $previousRevision]) {
+            $this->assertSame('queued', $refreshed->refresh()->status);
+            $this->assertNull($refreshed->revision);
+            $settings = $refreshed->runs()->first()->settings;
+            $this->assertSame('refresh', $settings['mode']);
+            $this->assertSame($previousRevision, $settings['source_revision']);
+            $this->assertSame('Earlier summary for '.$refreshed->title, $settings['previous_summary']);
+        }
+        $this->assertSame('changes_requested', $unrelated->refresh()->status);
+        Queue::assertPushed(RunMissionTask::class, 2);
+    }
+
+    public function test_merging_does_not_refresh_a_task_already_reviewed_against_the_new_base(): void
+    {
+        Queue::fake();
+        [$task, $repository] = $this->reviewedTask();
+        $this->readyToRefresh();
+        $task->update(['status' => 'approved']);
+        $current = MissionTask::factory()->readyForReview()->create(['base_revision' => $task->revision]);
+
+        $this->post(route('tasks.merge', $task), ['revision' => $task->revision])->assertSessionHasNoErrors();
+
+        $this->assertSame('merged', $task->refresh()->status);
+        $this->assertSame('review', $current->refresh()->status);
+        Queue::assertNothingPushed();
+    }
+
+    public function test_a_merge_is_allowed_while_another_task_is_running(): void
+    {
+        Queue::fake();
+        [$task, $repository] = $this->reviewedTask();
+        $task->update(['status' => 'approved']);
+        $running = MissionTask::factory()->create(['status' => 'running']);
+        $queued = MissionTask::factory()->create(['status' => 'queued']);
+
+        $response = $this->post(route('tasks.merge', $task), ['revision' => $task->revision]);
+
+        $response->assertRedirect(route('tasks.show', $task));
+        $response->assertSessionHasNoErrors();
+        $this->assertSame('merged', $task->refresh()->status);
+        $this->assertSame($task->revision, $this->git($repository, ['rev-parse', 'HEAD']));
+        $this->assertSame('running', $running->refresh()->status);
+        $this->assertSame('queued', $queued->refresh()->status);
+        Queue::assertNothingPushed();
     }
 
     public function test_merge_reconciles_a_previous_success_if_database_recording_was_interrupted(): void
@@ -214,17 +300,23 @@ class MissionMergeTest extends TestCase
         $this->assertDatabaseCount('decisions', 0);
     }
 
-    public function test_approval_is_invalidated_when_the_local_base_changed_after_review(): void
+    public function test_approving_against_a_moved_base_starts_a_refresh_instead_of_discarding_the_work(): void
     {
+        Queue::fake();
         [$task, $repository] = $this->reviewedTask();
-        file_put_contents($repository.'/other.txt', "New local base work\n");
-        $this->git($repository, ['add', 'other.txt']);
-        $this->git($repository, ['commit', '-m', 'New base']);
+        $this->readyToRefresh();
+        $reviewedRevision = $task->revision;
+        $this->commitToBase($repository, 'other.txt', "New local base work\n");
 
-        $this->post(route('tasks.decide', $task), ['action' => 'approve', 'revision' => $task->revision])->assertSessionHasErrors('task');
+        $response = $this->post(route('tasks.decide', $task), ['action' => 'approve', 'revision' => $reviewedRevision]);
 
-        $this->assertSame('changes_requested', $task->refresh()->status);
-        $this->assertDatabaseCount('decisions', 0);
+        $response->assertSessionHasErrors('task');
+        $this->assertStringContainsString('being re-checked', session('errors')->first('task'));
+        $this->assertSame('queued', $task->refresh()->status);
+        $this->assertSame('refresh', $task->runs()->first()->settings['mode']);
+        $this->assertSame($reviewedRevision, $task->runs()->first()->settings['source_revision']);
+        $this->assertDatabaseMissing('decisions', ['mission_task_id' => $task->id, 'action' => 'approve']);
+        Queue::assertPushed(RunMissionTask::class, 1);
     }
 
     public function test_legacy_merge_fetches_and_refuses_a_remote_that_changed_after_review(): void
@@ -319,6 +411,34 @@ class MissionMergeTest extends TestCase
         $this->assertSame('approved', $task->refresh()->status);
         $this->assertSame("User-owned ignored file\n", file_get_contents($repository.'/new-file.txt'));
         $this->assertSame($task->base_revision, $this->git($repository, ['rev-parse', 'HEAD']));
+    }
+
+    private function readyToRefresh(): void
+    {
+        config(['mission.openai_api_key' => 'test-key-not-a-real-secret', 'mission.worker_path' => base_path('artisan'), 'mission.test_command' => ['php', 'artisan', 'test']]);
+    }
+
+    private function commitToBase(string $repository, string $file, string $contents): string
+    {
+        file_put_contents($repository.'/'.$file, $contents);
+        $this->git($repository, ['add', $file]);
+        $this->git($repository, ['commit', '-m', 'Base work in '.$file]);
+
+        return $this->git($repository, ['rev-parse', 'HEAD']);
+    }
+
+    private function anotherReviewedTask(string $repository, string $baseRevision, string $status, string $name = 'other'): MissionTask
+    {
+        $worktree = config('mission.worktree_root').'/'.$name;
+        $this->git($repository, ['worktree', 'add', '-b', 'mission/'.$name, $worktree, $baseRevision]);
+        file_put_contents($worktree.'/'.$name.'.txt', "Parallel work\n");
+        $this->git($worktree, ['add', $name.'.txt']);
+        $this->git($worktree, ['commit', '-m', 'Parallel work']);
+        $task = MissionTask::factory()->readyForReview()->create(['status' => $status, 'revision' => $this->git($worktree, ['rev-parse', 'HEAD']), 'base_revision' => $baseRevision, 'worktree_path' => $worktree, 'branch' => 'mission/'.$name]);
+        $task->update(['recommendation' => 'Earlier summary for '.$task->title]);
+        AgentRun::factory()->for($task, 'task')->create(['status' => 'completed', 'settings' => ['repository_path' => $repository, 'base_branch' => 'main']]);
+
+        return $task;
     }
 
     private function remote(string $repository): string

@@ -89,6 +89,15 @@ class MissionTaskController extends Controller
         return to_route('tasks.show', $task)->with('status', 'Task queued. The worker will begin shortly.');
     }
 
+    public function refresh(MissionTask $task, MissionWorkflow $workflow): RedirectResponse
+    {
+        if (! $workflow->refresh($task)) {
+            throw ValidationException::withMessages(['task' => $task->refresh()->error]);
+        }
+
+        return to_route('tasks.show', $task)->with('status', 'Refresh queued. The change will be re-checked against the current base.');
+    }
+
     public function decide(Request $request, MissionTask $task, MissionWorkflow $workflow): RedirectResponse
     {
         $data = $request->validate([
