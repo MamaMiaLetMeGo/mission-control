@@ -33,8 +33,17 @@ class QueueSignal
         $diff = is_array($data['diff'] ?? null) ? $data['diff'] : [];
         $lines = (int) ($diff['additions'] ?? 0) + (int) ($diff['deletions'] ?? 0);
 
+        if (! array_key_exists('security', $data)) {
+            return ['signal' => 'yellow', 'reason' => 'Reviewed before security checks existed.'];
+        }
+        if (! is_array($data['security']) || ($data['security']['verdict'] ?? null) !== 'pass') {
+            return self::red('The security check did not pass.');
+        }
+        if (($data['tests']['exitCode'] ?? null) !== 0 || ($data['review']['verdict'] ?? null) !== 'pass') {
+            return self::red('Tests or the independent review did not pass.');
+        }
+
         $reason = match (true) {
-            ! isset($data['security']) || ! is_array($data['security']) => 'Reviewed before security checks existed.',
             ! empty($data['security']['findings']) => 'The security check left notes.',
             ($data['mode'] ?? null) === 'refresh' => 'Re-checked after the base moved.',
             $lines > 400 => "Large change ({$lines} lines).",

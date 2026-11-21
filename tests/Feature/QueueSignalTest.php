@@ -15,7 +15,7 @@ class QueueSignalTest extends TestCase
     /** @param array<string, mixed> $reviewData */
     private function reviewed(array $reviewData = [], string $status = 'review', array $attributes = []): MissionTask
     {
-        $base = ['security' => ['verdict' => 'pass', 'summary' => 'Fine.', 'findings' => []], 'diff' => ['files' => ['app/Foo.php'], 'additions' => 10, 'deletions' => 5], 'reviewRounds' => 0];
+        $base = ['tests' => ['exitCode' => 0], 'review' => ['verdict' => 'pass'], 'security' => ['verdict' => 'pass', 'summary' => 'Fine.', 'findings' => []], 'diff' => ['files' => ['app/Foo.php'], 'additions' => 10, 'deletions' => 5], 'reviewRounds' => 0];
 
         return MissionTask::factory()->create(['status' => $status, 'review_data' => array_merge($base, $reviewData)] + $attributes);
     }
@@ -70,6 +70,18 @@ class QueueSignalTest extends TestCase
     {
         $task = $this->reviewed(['security' => ['verdict' => 'pass', 'summary' => 'x', 'findings' => [['severity' => 'low', 'file' => 'a', 'note' => 'b']]]]);
         $this->assertSame(['signal' => 'yellow', 'reason' => 'The security check left notes.'], $this->signal($task));
+    }
+
+    public function test_anything_short_of_a_full_pass_is_red(): void
+    {
+        $security = 'The security check did not pass.';
+        $this->assertSame(['signal' => 'red', 'reason' => $security], $this->signal($this->reviewed(['security' => ['verdict' => 'fail', 'summary' => 'x', 'findings' => []]])));
+        $this->assertSame(['signal' => 'red', 'reason' => $security], $this->signal($this->reviewed(['security' => []])));
+        $this->assertSame(['signal' => 'red', 'reason' => $security], $this->signal($this->reviewed(['security' => 'pass'])));
+        $other = 'Tests or the independent review did not pass.';
+        $this->assertSame(['signal' => 'red', 'reason' => $other], $this->signal($this->reviewed(['tests' => ['exitCode' => 1]])));
+        $this->assertSame(['signal' => 'red', 'reason' => $other], $this->signal($this->reviewed(['tests' => ['exitCode' => '0']])));
+        $this->assertSame(['signal' => 'red', 'reason' => $other], $this->signal($this->reviewed(['review' => ['verdict' => 'changes_requested']])));
     }
 
     public function test_a_refresh_is_yellow(): void
