@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Models\AgentRun;
 use App\Services\CodexProcess;
 use App\Services\RunSlots;
+use App\Services\TokenBudget;
 use DateTime;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -63,6 +64,9 @@ class RunMissionTask implements ShouldQueue
             });
             if (! $claimed) {
                 return;
+            }
+            if (app(TokenBudget::class)->exhausted()) {
+                throw new RuntimeException('The daily token limit was reached before this run could start. Start it again tomorrow or raise the limit in Settings.');
             }
             if (! config('mission.openai_api_key')) {
                 throw new RuntimeException('The queue worker has no API key. Restart it after configuring the key.');

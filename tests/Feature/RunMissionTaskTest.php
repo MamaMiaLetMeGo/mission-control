@@ -188,6 +188,31 @@ class RunMissionTaskTest extends TestCase
         $held->release();
     }
 
+    public function test_a_waiting_run_does_not_start_once_the_daily_token_limit_is_reached(): void
+    {
+        $this->freezeTime();
+        config(['mission.openai_api_key' => 'test-key', 'mission.max_parallel_runs' => 1, 'mission.daily_token_limit' => 10000]);
+        AgentRun::factory()->create(['status' => 'completed', 'usage' => ['input_tokens' => 8000, 'output_tokens' => 2000]]);
+        $run = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'queued']), 'task')->create();
+        $worker = $this->mock(CodexProcess::class, function ($mock): void {
+            $mock->shouldNotReceive('run');
+            $mock->shouldReceive('redact')->andReturnUsing(fn (string $message): string => $message);
+        });
+        $job = (new RunMissionTask($run->id))->withFakeQueueInteractions();
+
+        $job->handle($worker);
+
+        $message = 'The daily token limit was reached before this run could start. Start it again tomorrow or raise the limit in Settings.';
+        $job->assertNotReleased();
+        $this->assertSame('failed', $run->refresh()->status);
+        $this->assertSame($message, $run->error);
+        $this->assertSame('failed', $run->task->status);
+        $this->assertSame($message, $run->task->error);
+        $slot = app(RunSlots::class)->acquire(60);
+        $this->assertNotNull($slot);
+        $slot->release();
+    }
+
     public function test_a_waiting_run_retries_for_six_hours_instead_of_a_fixed_number_of_attempts(): void
     {
         $this->freezeTime();
