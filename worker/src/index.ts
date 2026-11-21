@@ -1,3 +1,4 @@
+import { runLearning, validateLearnInput } from './brain.js';
 import { checkConnectivity } from './check.js';
 import { runPlanning, validatePlanInput } from './planner.js';
 import { initialResult, runMission } from './runner.js';
@@ -16,6 +17,7 @@ if (process.argv.includes('--check')) {
   process.exitCode = result.success ? 0 : 1;
 } else {
   let planning = false;
+  let learning = false;
   try {
     let input = '';
     process.stdin.setEncoding('utf8');
@@ -27,16 +29,21 @@ if (process.argv.includes('--check')) {
     }
     const parsed = JSON.parse(input);
     planning = parsed?.mode === 'plan';
-    const result = planning
-      ? await runPlanning(validatePlanInput(parsed), { apiKey, signal: controller.signal, emit: write })
-      : await runMission(validateInput(parsed), { apiKey, signal: controller.signal, emit: write });
+    learning = parsed?.mode === 'learn';
+    const result = learning
+      ? await runLearning(validateLearnInput(parsed), { apiKey, signal: controller.signal, emit: write })
+      : planning
+        ? await runPlanning(validatePlanInput(parsed), { apiKey, signal: controller.signal, emit: write })
+        : await runMission(validateInput(parsed), { apiKey, signal: controller.signal, emit: write });
     write(result);
     process.exitCode = result.success ? 0 : 1;
   } catch (error) {
     const message = redact(error instanceof Error ? error.message : String(error), apiKey);
-    write(planning
-      ? { type: 'plan', success: false, overview: '', briefs: [], usage: emptyUsage(), error: message }
-      : { ...initialResult(), error: message });
+    write(learning
+      ? { type: 'learn', success: false, summary: '', changes: [], usage: emptyUsage(), error: message }
+      : planning
+        ? { type: 'plan', success: false, overview: '', briefs: [], usage: emptyUsage(), error: message }
+        : { ...initialResult(), error: message });
     process.exitCode = 1;
   }
 }

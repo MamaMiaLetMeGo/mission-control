@@ -1,7 +1,7 @@
 import type { PreviewConfig, PreviewHandle, Screenshot } from './preview.js';
 import type { PreviewDatabase } from './laravel-preview.js';
 
-export type Role = 'implementation' | 'review' | 'planning' | 'security';
+export type Role = 'implementation' | 'review' | 'planning' | 'security' | 'brain';
 
 export interface MissionInput {
   taskId: number;
@@ -110,6 +110,8 @@ export interface AgentRequest {
   signal: AbortSignal;
   outputSchema?: unknown;
   images?: string[];
+  /** Lets the agent run in a directory that is not a Git repository. Only the Brain sets it. */
+  skipGitRepoCheck?: boolean;
 }
 
 export type AgentRunner = (request: AgentRequest) => Promise<{ response: string; usage: TokenUsage }>;
