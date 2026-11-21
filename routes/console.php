@@ -1,8 +1,10 @@
 <?php
 
+use App\Jobs\LearnPreferences;
 use App\Jobs\PlanGoal;
 use App\Jobs\RunMissionTask;
 use App\Models\AgentRun;
+use App\Models\BrainRun;
 use App\Models\Goal;
 use App\Services\ChiefOfStaff;
 use Illuminate\Support\Facades\Artisan;
@@ -43,6 +45,11 @@ Artisan::command('mission:recover {--older-than=20 : Only mark runs older than t
             @rmdir(dirname($ownerFile));
         }
         (new RunMissionTask($run->id))->failed(new RuntimeException('Run marked interrupted by mission:recover. Evidence is retained; retry manually.'));
+        $recovered++;
+    }
+    $brainRuns = BrainRun::query()->whereIn('status', $jobPending ? ['learning'] : ['queued', 'learning'])->where('updated_at', '<', now()->subMinutes($minutes))->pluck('id');
+    foreach ($brainRuns as $brainRunId) {
+        (new LearnPreferences($brainRunId))->failed(new RuntimeException('Learning was interrupted. Nothing was changed.'));
         $recovered++;
     }
     $this->info('Marked '.$recovered.' interrupted runs as failed. No tasks were restarted.');

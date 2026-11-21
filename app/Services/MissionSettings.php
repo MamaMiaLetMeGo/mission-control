@@ -7,9 +7,19 @@ use Illuminate\Support\Facades\DB;
 
 class MissionSettings
 {
-    public const KEYS = ['repository_path', 'base_branch', 'model', 'test_command', 'max_runtime_seconds', 'max_tokens', 'daily_run_limit', 'max_parallel_runs', 'auto_start', 'review_rounds', 'daily_token_limit', 'preview_enabled', 'preview_driver', 'preview_directory', 'preview_command', 'preview_paths', 'preview_ttl_seconds'];
+    public const KEYS = ['repository_path', 'base_branch', 'model', 'test_command', 'max_runtime_seconds', 'max_tokens', 'daily_run_limit', 'max_parallel_runs', 'auto_start', 'review_rounds', 'daily_token_limit', 'preview_enabled', 'preview_driver', 'preview_directory', 'preview_command', 'preview_paths', 'preview_ttl_seconds', 'brain_enabled', 'brain_learn_after'];
 
     public const PREVIEW_KEYS = ['preview_enabled', 'preview_driver', 'preview_directory', 'preview_command', 'preview_paths', 'preview_ttl_seconds'];
+
+    /**
+     * What to do when a readiness check fails, keyed by check.
+     */
+    public const READINESS_MESSAGES = [
+        'api_key' => 'Add the OpenAI API key to this app’s .env file, then restart the queue worker.',
+        'repository' => 'Choose an existing local Git repository in Settings.',
+        'worker' => 'Build the Codex worker before starting a task.',
+        'tests' => 'Set a verification command in Settings before starting a task.',
+    ];
 
     /** @param array<string, mixed> $settings
      * @return array{enabled: bool, driver: string, directory: string, command: array, paths: array, ttlSeconds: int}
@@ -63,16 +73,10 @@ class MissionSettings
             'worker' => is_file(config('mission.worker_path')),
             'tests' => is_array($settings['test_command']) && count($settings['test_command']) > 0,
         ];
-        $messages = [
-            'api_key' => 'Add the OpenAI API key to this app’s .env file, then restart the queue worker.',
-            'repository' => 'Choose an existing local Git repository in Settings.',
-            'worker' => 'Build the Codex worker before starting a task.',
-            'tests' => 'Set a verification command in Settings before starting a task.',
-        ];
         $issues = [];
         foreach ($checks as $key => $ready) {
             if (! $ready) {
-                $issues[] = $messages[$key];
+                $issues[] = self::READINESS_MESSAGES[$key];
             }
         }
 

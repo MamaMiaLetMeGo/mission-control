@@ -27,6 +27,7 @@ export function createCodexAgent(apiKey: string, runtimeHome: string, emit: Emit
       networkAccessEnabled: false,
       webSearchMode: 'disabled',
       threadSource: 'mission-control',
+      ...(request.skipGitRepoCheck ? { skipGitRepoCheck: true } : {}),
       ...(request.model?.trim() ? { model: request.model.trim() } : {}),
     });
     const input = request.images?.length

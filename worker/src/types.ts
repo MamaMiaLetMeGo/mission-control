@@ -1,7 +1,7 @@
 import type { PreviewConfig, PreviewHandle, Screenshot } from './preview.js';
 import type { PreviewDatabase } from './laravel-preview.js';
 
-export type Role = 'implementation' | 'review' | 'planning' | 'security';
+export type Role = 'implementation' | 'review' | 'planning' | 'security' | 'brain';
 
 export interface MissionInput {
   taskId: number;
@@ -32,6 +32,8 @@ export interface MissionInput {
   previousSummary?: string;
   /** How many times a sub-agent may fix the reviewer's findings before the run stops. Integer 0-3, defaults to 0; ignored in refresh mode. */
   reviewRounds?: number;
+  /** The owner's active standing preferences. At most 20, each a single line of 1-300 characters. */
+  preferences?: string[];
 }
 
 export interface TokenUsage {
@@ -110,6 +112,8 @@ export interface AgentRequest {
   signal: AbortSignal;
   outputSchema?: unknown;
   images?: string[];
+  /** Lets the agent run in a directory that is not a Git repository. Only the Brain sets it. */
+  skipGitRepoCheck?: boolean;
 }
 
 export type AgentRunner = (request: AgentRequest) => Promise<{ response: string; usage: TokenUsage }>;

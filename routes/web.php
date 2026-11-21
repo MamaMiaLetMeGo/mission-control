@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\BrainController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DesktopHealthController;
 use App\Http\Controllers\GoalController;
@@ -55,3 +56,8 @@ Route::get('/repository/status', [RepositorySyncController::class, 'status'])->n
 Route::post('/repository/check', [RepositorySyncController::class, 'check'])->name('repository.check');
 Route::post('/repository/sync', [RepositorySyncController::class, 'sync'])->name('repository.sync');
 Route::get('/profile', [DashboardController::class, 'profile'])->name('profile');
+Route::get('/brain', [BrainController::class, 'index'])->name('brain.index');
+Route::post('/brain/preferences', [BrainController::class, 'store'])->name('brain.store');
+Route::post('/brain/preferences/{preference}', [BrainController::class, 'update'])->name('brain.update');
+Route::post('/brain/preferences/{preference}/delete', [BrainController::class, 'destroy'])->name('brain.destroy');
+Route::post('/brain/learn', [BrainController::class, 'learn'])->name('brain.learn');

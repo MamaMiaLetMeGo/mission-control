@@ -14,6 +14,8 @@ class Decision extends Model
     /** @use HasFactory<DecisionFactory> */
     use HasFactory;
 
+    public const HUMAN_ACTIONS = ['approve', 'request_changes', 'defer', 'reject'];
+
     public function task(): BelongsTo
     {
         return $this->belongsTo(MissionTask::class, 'mission_task_id');

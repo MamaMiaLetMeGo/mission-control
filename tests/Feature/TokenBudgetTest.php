@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\AgentRun;
+use App\Models\BrainRun;
 use App\Models\Goal;
 use App\Services\TokenBudget;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
@@ -56,6 +57,17 @@ class TokenBudgetTest extends TestCase
         Goal::factory()->create(['usage' => ['input_tokens' => 300, 'output_tokens' => 200]]);
         Goal::factory()->create(['usage' => ['input_tokens' => 5000, 'output_tokens' => 5000], 'created_at' => now()->subDay()]);
         Goal::factory()->create(['usage' => null]);
+
+        $this->assertSame(1500, app(TokenBudget::class)->usedToday());
+    }
+
+    public function test_brain_runs_created_today_count_toward_usage(): void
+    {
+        $this->freezeTime();
+        AgentRun::factory()->create(['usage' => ['input_tokens' => 600, 'output_tokens' => 400]]);
+        BrainRun::factory()->create(['usage' => ['input_tokens' => 300, 'output_tokens' => 200]]);
+        BrainRun::factory()->create(['usage' => ['input_tokens' => 5000, 'output_tokens' => 5000], 'created_at' => now()->subDay()]);
+        BrainRun::factory()->create(['usage' => null]);
 
         $this->assertSame(1500, app(TokenBudget::class)->usedToday());
     }

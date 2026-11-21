@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Lead;
 use App\Models\MissionTask;
+use App\Services\Brain;
 use App\Services\BrowserEvidence;
 use App\Services\ChiefOfStaff;
 use App\Services\MissionPreview;
@@ -108,6 +109,11 @@ class MissionTaskController extends Controller
             'revision' => ['required_if:action,approve', 'nullable', 'string', 'regex:/^[a-f0-9]{40,64}$/'],
         ]);
         $workflow->decide($task, $data['action'], $data['feedback'] ?? null, $data['revision'] ?? null);
+        try {
+            app(Brain::class)->start();
+        } catch (Throwable $exception) {
+            report($exception);
+        }
 
         return to_route('tasks.show', $task)->with('status', $data['action'] === 'approve' ? 'Revision approved. Merge is a separate action.' : 'Decision saved.');
     }
