@@ -48,4 +48,25 @@
     </form>
     <aside class="flex flex-col gap-5"><section class="panel"><div class="panel-heading"><h2>Setup checklist</h2></div><ul class="checklist">@foreach(['api_key' => 'OpenAI API key', 'repository' => 'Git repository', 'worker' => 'Codex worker', 'tests' => 'Verification command'] as $key => $label)<li><span class="checklist-icon {{ ($readiness[$key] ?? false) ? 'checklist-ready' : '' }}">@include('mission.icon', ['name' => ($readiness[$key] ?? false) ? 'check' : 'clock', 'class' => 'size-4'])</span><span class="flex-1">{{ $label }}</span><span class="text-xs text-muted">{{ ($readiness[$key] ?? false) ? 'Ready' : 'Needed' }}</span></li>@endforeach</ul>@if(! empty($readiness['issues']))<div class="px-5 pb-5"><ul class="text-xs text-muted leading-relaxed list-disc pl-4 space-y-2">@foreach($readiness['issues'] as $issue)<li>{{ $issue }}</li>@endforeach</ul></div>@endif</section><section class="small-note"><span class="text-accent">@include('mission.icon', ['name' => 'shield'])</span><div><h3>Your key stays local</h3><p>Add your API key to <code>OPENAI_API_KEY</code> in this app’s <code>.env</code> file. The dashboard never displays it.</p><p class="mt-3">Refresh this page after updating the file. Restart the queue worker if it is already running.</p></div></section><section class="small-note"><span class="text-accent">@include('mission.icon', ['name' => 'branch'])</span><div><h3>Room for focused work</h3><p>Each run gets a separate Git worktree. Your decisions stay attached to the exact revision reviewed.</p></div></section></aside>
 </div>
+<section class="panel mt-6" id="leads">
+    <div class="panel-heading"><h2>Leads</h2>@include('mission.icon', ['name' => 'queue', 'class' => 'size-4 text-muted'])</div>
+    <div class="p-6 flex flex-col gap-6">
+        <p class="field-help">Each task is handled by one lead. Deactivated leads can no longer be chosen for new tasks, but existing tasks keep them.</p>
+        @foreach($leads as $lead)
+            <form method="POST" action="{{ route('leads.update', $lead) }}" class="flex flex-col gap-4 pb-6 border-b border-line">@csrf
+                <div class="field"><label for="lead-name-{{ $lead->id }}">Name</label><input id="lead-name-{{ $lead->id }}" name="name" value="{{ $lead->name }}" required maxlength="100"></div>
+                <div class="field"><label for="lead-instructions-{{ $lead->id }}">Instructions</label><textarea id="lead-instructions-{{ $lead->id }}" name="instructions" rows="3" required maxlength="4000">{{ $lead->instructions }}</textarea></div>
+                <input type="hidden" name="is_active" value="0">
+                <label class="capture-setting-toggle" for="lead-active-{{ $lead->id }}"><input type="checkbox" id="lead-active-{{ $lead->id }}" name="is_active" value="1" @checked($lead->is_active)><span><strong>Active</strong><span>Available when creating new tasks.</span></span></label>
+                <div class="flex justify-end"><button type="submit" class="button button-secondary">Save lead</button></div>
+            </form>
+        @endforeach
+        <form method="POST" action="{{ route('leads.store') }}" class="flex flex-col gap-4">@csrf
+            <h3 class="font-semibold">Add a lead</h3>
+            <div class="field"><label for="new-lead-name">Name</label><input id="new-lead-name" name="name" value="{{ old('name') }}" required maxlength="100" placeholder="Growth Lead"></div>
+            <div class="field"><label for="new-lead-instructions">Instructions</label><textarea id="new-lead-instructions" name="instructions" rows="3" required maxlength="4000" placeholder="What this lead owns and how it should work.">{{ old('instructions') }}</textarea></div>
+            <div class="flex justify-end"><button type="submit" class="button button-primary">Add lead</button></div>
+        </form>
+    </div>
+</section>
 @endsection

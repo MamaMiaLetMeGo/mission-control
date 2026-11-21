@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Lead;
 use App\Models\MissionTask;
 use App\Services\GitRepository;
 use App\Services\MissionSettings;
@@ -18,7 +19,7 @@ class MissionSettingController extends Controller
 {
     public function edit(MissionSettings $settings, RepositorySync $repository): View
     {
-        return view('mission.settings', ['settings' => $settings->all(), 'readiness' => $settings->readiness(), 'repositoryStatus' => $repository->status()]);
+        return view('mission.settings', ['settings' => $settings->all(), 'readiness' => $settings->readiness(), 'repositoryStatus' => $repository->status(), 'leads' => Lead::query()->orderBy('position')->orderBy('id')->get()]);
     }
 
     public function update(Request $request, MissionSettings $settings, GitRepository $git): RedirectResponse

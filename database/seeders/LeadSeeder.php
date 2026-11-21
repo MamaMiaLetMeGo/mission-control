@@ -15,7 +15,7 @@ class LeadSeeder extends Seeder
             ['key' => 'design', 'name' => 'Design Lead', 'instructions' => 'You own how it looks and feels. Keep the interface consistent, accessible, and responsive, and reuse existing components and styles before inventing new ones.', 'position' => 3],
             ['key' => 'operations', 'name' => 'Operations Lead', 'instructions' => 'You own how it runs and ships. Keep deployments, configuration, and data migrations safe and reversible, and watch for anything that could break a live install.', 'position' => 4],
         ] as $lead) {
-            Lead::query()->updateOrCreate(['key' => $lead['key']], $lead + ['is_active' => true]);
+            Lead::query()->firstOrCreate(['key' => $lead['key']], $lead + ['is_active' => true]);
         }
     }
 }
