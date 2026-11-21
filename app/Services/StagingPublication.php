@@ -11,7 +11,7 @@ use Illuminate\Validation\ValidationException;
 
 class StagingPublication
 {
-    private const PR_FIELDS = 'number,url,state,isDraft,headRefName,headRefOid,baseRefName,baseRefOid,isCrossRepository,mergeable,mergeStateStatus,mergeCommit';
+    private const PR_FIELDS = 'number,url,state,isDraft,headRefName,headRefOid,baseRefName,baseRefOid,isCrossRepository,mergeable,mergeStateStatus,mergeCommit,reviewDecision';
 
     public function __construct(private MissionSettings $settings, private GitRepository $git, private GitHubProcess $github, private BrowserEvidence $evidence) {}
 
@@ -23,7 +23,7 @@ class StagingPublication
             'state' => 'not_published', 'pr_url' => null, 'pr_number' => null,
             'head_revision' => $task->revision, 'base_branch' => 'staging', 'base_revision' => $task->base_revision,
             'merge_revision' => null, 'checks' => [], 'deployment' => ['state' => 'not_started', 'url' => null, 'revision' => null],
-            'last_checked_at' => null, 'error' => null, 'blockers' => [],
+            'last_checked_at' => null, 'error' => null, 'blockers' => [], 'review_decision' => null,
         ], ...$publication];
         $run = $task->relationLoaded('runs') ? $task->runs->first() : $task->runs()->first();
         $settings = $this->settings->all();
@@ -260,6 +260,7 @@ class StagingPublication
         $checks = data_get($task->publication, 'checks', []);
         $blockers = [];
         $state = 'open';
+        $reviewDecision = $this->reviewDecision($pull);
         $merged = ($pull['state'] ?? null) === 'MERGED';
         $mergeRevision = $merged ? data_get($pull, 'mergeCommit.oid') : null;
         if ($merged && (! is_string($mergeRevision) || ! preg_match('/^[a-f0-9]{40,64}$/', $mergeRevision))) {
@@ -282,6 +283,9 @@ class StagingPublication
             if (($pull['isDraft'] ?? true) || ($pull['mergeStateStatus'] ?? null) !== 'CLEAN' || ($pull['mergeable'] ?? null) !== 'MERGEABLE') {
                 $blockers[] = 'GitHub must report a ready, conflict-free PR with all branch protections satisfied.';
             }
+            if (! ($pull['isDraft'] ?? true)) {
+                array_push($blockers, ...$this->reviewBlockers($reviewDecision));
+            }
             if (($pull['baseRefOid'] ?? null) !== $task->base_revision) {
                 $blockers[] = 'The staging base changed after this task was reviewed.';
             }
@@ -293,7 +297,7 @@ class StagingPublication
             $state = 'closed';
             $blockers[] = 'The staging pull request is closed without being merged.';
         }
-        $publication = [...$task->publication, 'state' => $state, 'merge_revision' => $mergeRevision, 'checks' => $checks, 'blockers' => $blockers, 'error' => null, 'last_checked_at' => now()->toISOString()];
+        $publication = [...$task->publication, 'state' => $state, 'merge_revision' => $mergeRevision, 'checks' => $checks, 'blockers' => $blockers, 'review_decision' => $reviewDecision, 'error' => null, 'last_checked_at' => now()->toISOString()];
         $task->update(['publication' => $publication]);
         if ($merged) {
             $task->decisions()->firstOrCreate(['action' => 'merge_staging', 'revision' => $task->revision], ['feedback' => 'GitHub merged the reviewed PR into staging at '.$mergeRevision.'. '.$publication['pr_url']]);
@@ -388,5 +392,27 @@ class StagingPublication
     private function reject(string $message): never
     {
         throw ValidationException::withMessages(['publication' => $message]);
+    }
+
+    /**
+     * Normalizes GitHub's reviewDecision: only the three documented decisions are kept.
+     */
+    private function reviewDecision(array $pull): ?string
+    {
+        $decision = $pull['reviewDecision'] ?? null;
+
+        return in_array($decision, ['APPROVED', 'REVIEW_REQUIRED', 'CHANGES_REQUESTED'], true) ? $decision : null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function reviewBlockers(?string $decision): array
+    {
+        return match ($decision) {
+            'REVIEW_REQUIRED' => ['GitHub requires an approving review on this pull request.'],
+            'CHANGES_REQUESTED' => ['A GitHub reviewer requested changes on this pull request.'],
+            default => [],
+        };
     }
 }
