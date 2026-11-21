@@ -71,15 +71,18 @@ test('private launchd jobs are on demand and own PHP descendants without a shell
     } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test('web binding is fixed to loopback without fallback ports and queue has its bounded execution settings', () => {
+test('web binding is fixed to loopback without fallback ports and the queue job supervises four listeners', () => {
     const web = jobArguments(config, 'web'), worker = jobArguments(config, 'worker');
     assert.ok(web.includes('--host=127.0.0.1'));
     assert.ok(web.includes('--port=8765'));
     assert.ok(web.includes('--tries=1'));
     assert.ok(web.includes('--no-reload'));
-    assert.ok(worker.includes('--queue=missions,default'));
-    assert.ok(worker.includes('--timeout=900'));
-    assert.ok(worker.includes('--tries=1'));
+    assert.ok(worker.includes('mission:listen'));
+    assert.ok(worker.includes('--processes=4'));
+});
+
+test('the queue job runs the supervising command with four listeners', () => {
+    assert.deepEqual(jobArguments(config, 'queue').slice(-3), ['mission:listen', '--processes=4', '--no-interaction']);
 });
 
 function jobOutput(kind = 'web', changes = {}) {

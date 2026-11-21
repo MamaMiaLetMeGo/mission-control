@@ -18,7 +18,7 @@ export function runtimeEnvironment(config) {
 export function jobArguments(config, kind) {
     return [config.phpPath, join(config.repositoryPath, 'artisan'), ...(kind === 'web'
         ? ['serve', '--host=127.0.0.1', `--port=${config.port}`, '--tries=1', '--no-reload', '--no-interaction']
-        : ['queue:listen', '--queue=missions,default', '--tries=1', '--timeout=900', '--sleep=2', '--no-interaction'])];
+        : ['mission:listen', '--processes=4', '--no-interaction'])];
 }
 
 const xml = value => String(value).replace(/[<>&"']/g, char => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[char]);
