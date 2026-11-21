@@ -32,6 +32,7 @@
         @foreach($leadTasks as $task)
         <a href="{{ route('tasks.show', $task) }}" class="task-row">
             <span class="flex-1 min-w-0"><span class="task-title">{{ $task->title }}</span><span class="task-meta"><span>MC-{{ str_pad((string) $task->id, 3, '0', STR_PAD_LEFT) }}</span>@foreach($task->waitingOn() as $dependency)<span>·</span><span>Waiting for MC-{{ str_pad((string) $dependency->id, 3, '0', STR_PAD_LEFT) }}</span>@endforeach</span></span>
+            @if($task->signal)<span class="signal-dot signal-{{ $task->signal }}" title="{{ $task->signal_reason }}"><span class="sr-only">{{ ucfirst($task->signal) }}: {{ $task->signal_reason }}</span></span>@endif
             <span class="status-badge status-{{ $task->status }}">{{ $statusLabels[$task->status] ?? ucfirst($task->status) }}</span>
             <span class="text-muted task-row-arrow">@include('mission.icon', ['name' => 'chevron', 'class' => 'size-4'])</span>
         </a>

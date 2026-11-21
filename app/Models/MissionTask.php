@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\QueueSignal;
 use Database\Factories\MissionTaskFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -23,6 +24,15 @@ class MissionTask extends Model
     protected function casts(): array
     {
         return ['review_data' => 'array', 'publication' => 'array', 'production_publication' => 'array', 'depends_on' => 'array'];
+    }
+
+    protected static function booted(): void
+    {
+        static::saving(function (self $task): void {
+            $signal = QueueSignal::for($task);
+            $task->signal = $signal['signal'];
+            $task->signal_reason = $signal['reason'];
+        });
     }
 
     public function lead(): BelongsTo
