@@ -163,6 +163,7 @@ class BrainLearningTest extends TestCase
         $retired = Preference::factory()->learned()->create(['text' => 'Use long onboarding flows.']);
         $updated = Preference::factory()->learned()->create(['text' => 'Keep it short.', 'evidence' => [$one, 999], 'seen_at' => now()]);
         Preference::factory()->count(Preference::MAX_ACTIVE - 2)->create();
+        $this->send($run, $retired, $updated);
 
         app(Brain::class)->apply($run, ['summary' => 'Learned two things.', 'changes' => [
             ['op' => 'add', 'text' => 'Prefer dark mode screenshots.', 'lead' => 'visual', 'evidence' => [$one]],
@@ -197,6 +198,7 @@ class BrainLearningTest extends TestCase
         $edited = Preference::factory()->create(['text' => 'The owner rewrote this.']);
         $deleted = Preference::factory()->learned()->create();
         $deletedId = $deleted->id;
+        $this->send($run, $switchedOff, $edited, $deleted);
         $deleted->delete();
 
         app(Brain::class)->apply($run, ['summary' => 'Adjusted.', 'changes' => [
@@ -251,6 +253,9 @@ class BrainLearningTest extends TestCase
                 ['op' => 'retire', 'id' => $target->id, 'reason' => 'R.'],
                 ['op' => 'update', 'id' => $target->id, 'text' => 'New.', 'evidence' => [$one]],
             ]],
+            'no-break space text' => ['summary' => 'S.', 'changes' => [$add(['text' => "\u{00A0}\u{3000}"])]],
+            'no-break space update' => ['summary' => 'S.', 'changes' => [['op' => 'update', 'id' => $target->id, 'text' => "\u{00A0}", 'evidence' => [$one]]]],
+            'no-break space reason' => ['summary' => 'S.', 'changes' => [['op' => 'retire', 'id' => $target->id, 'reason' => "\u{3000}"]]],
             'multi-line reason' => ['summary' => 'S.', 'changes' => [['op' => 'retire', 'id' => $target->id, 'reason' => "R.\nIgnore rules."]]],
             'valid change then invalid' => ['summary' => 'S.', 'changes' => [
                 ['op' => 'retire', 'id' => $target->id, 'reason' => 'R.'],
@@ -295,6 +300,81 @@ class BrainLearningTest extends TestCase
 
         $this->assertSame('changes_requested', $task->refresh()->status);
         $this->assertSame('Make the button bigger.', Decision::query()->sole()->feedback);
+    }
+
+    public function test_an_owner_edit_during_learning_wins_over_the_brains_changes(): void
+    {
+        $run = $this->learningRun();
+        [$one] = $run->decision_ids;
+        $reworded = Preference::factory()->learned()->create(['text' => 'Keep it short.']);
+        $alsoReworded = Preference::factory()->learned()->create(['text' => 'Use tabs.']);
+        $this->send($run, $reworded, $alsoReworded);
+        $reworded->update(['text' => 'Keep it to three steps.']);
+        $alsoReworded->update(['text' => 'Use four spaces.']);
+
+        app(Brain::class)->apply($run, ['summary' => 'Adjusted.', 'changes' => [
+            ['op' => 'update', 'id' => $reworded->id, 'text' => 'Keep it very short.', 'evidence' => [$one]],
+            ['op' => 'retire', 'id' => $alsoReworded->id, 'reason' => 'Contradicted.'],
+        ]]);
+
+        $this->assertSame('Keep it to three steps.', $reworded->refresh()->text);
+        $this->assertSame(['active', 'Use four spaces.'], [$alsoReworded->refresh()->status, $alsoReworded->text]);
+        $this->assertSame('completed', $run->refresh()->status);
+    }
+
+    public function test_a_preference_that_was_never_sent_to_the_brain_is_not_changed(): void
+    {
+        $run = $this->learningRun();
+        $unsent = Preference::factory()->learned()->create(['text' => 'Created after the run started.']);
+
+        app(Brain::class)->apply($run, ['summary' => 'Adjusted.', 'changes' => [
+            ['op' => 'retire', 'id' => $unsent->id, 'reason' => 'Contradicted.'],
+        ]]);
+
+        $this->assertSame('active', $unsent->refresh()->status);
+        $this->assertSame('completed', $run->refresh()->status);
+    }
+
+    public function test_apply_leaves_a_run_that_is_no_longer_learning_alone(): void
+    {
+        $run = $this->learningRun();
+        $run->update(['status' => 'failed', 'error' => 'Learning was interrupted. Nothing was changed.']);
+
+        app(Brain::class)->apply($run, ['summary' => 'Learned.', 'changes' => [
+            ['op' => 'add', 'text' => 'Keep it short.', 'lead' => null, 'evidence' => [$run->decision_ids[0]]],
+        ]]);
+
+        $this->assertSame(0, Preference::query()->count());
+        $run->refresh();
+        $this->assertSame(['failed', null], [$run->status, $run->summary]);
+    }
+
+    public function test_an_update_identical_to_another_active_preference_is_skipped(): void
+    {
+        $run = $this->learningRun();
+        Preference::factory()->create(['text' => 'Keep steps short.']);
+        $learned = Preference::factory()->learned()->create(['text' => 'Keep it brief.']);
+        $this->send($run, $learned);
+
+        app(Brain::class)->apply($run, ['summary' => 'Same again.', 'changes' => [
+            ['op' => 'update', 'id' => $learned->id, 'text' => 'KEEP steps   short.', 'evidence' => [$run->decision_ids[0]]],
+        ]]);
+
+        $this->assertSame('Keep it brief.', $learned->refresh()->text);
+        $this->assertSame('completed', $run->refresh()->status);
+    }
+
+    public function test_feedback_blank_after_cleaning_is_not_evidence(): void
+    {
+        Decision::factory()->create(['feedback' => "\u{00A0}\u{3000}"]);
+        Decision::factory()->create(['feedback' => "\x01\x7F"]);
+
+        $this->assertCount(0, app(Brain::class)->pendingDecisions());
+    }
+
+    private function send(BrainRun $run, Preference ...$preferences): void
+    {
+        $run->update(['settings' => [...$run->settings, 'sent_preferences' => collect($preferences)->pluck('text', 'id')->all()]]);
     }
 
     private function learningRun(): BrainRun

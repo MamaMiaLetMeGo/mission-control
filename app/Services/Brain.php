@@ -29,7 +29,7 @@ class Brain
     public function clean(string $text): string
     {
         $text = preg_replace('/[\x00-\x1F\x7F\x{0085}\x{2028}\x{2029}]/u', ' ', $text) ?? '';
-        $text = preg_replace('/\s+/u', ' ', $text) ?? '';
+        $text = preg_replace('/[\s\p{Z}]+/u', ' ', $text) ?? '';
 
         return trim(mb_substr(trim($text), 0, 300));
     }
@@ -95,7 +95,7 @@ class Brain
             }
 
             $cursor = (int) $batch->last()->id;
-            $found = $found->concat($batch->filter(fn (Decision $decision): bool => trim((string) $decision->feedback) !== ''));
+            $found = $found->concat($batch->filter(fn (Decision $decision): bool => $this->clean((string) $decision->feedback) !== ''));
         }
 
         return $found->take(self::MAX_DECISIONS)->values();
@@ -146,7 +146,8 @@ class Brain
 
     /**
      * Apply the Brain's changes: retirements, then updates, then adds up to the active cap, then complete the run.
-     * Changes to preferences that are no longer active and learned are skipped. Throws InvalidArgumentException, applying
+     * Changes to preferences that were not sent to the Brain, or that the owner has since edited, switched off or deleted,
+     * are skipped, as are updates and adds duplicating another active preference. A run no longer learning is left alone. Throws InvalidArgumentException, applying
      * nothing, when the result breaks any limit.
      *
      * @param  array<string, mixed>  $result
@@ -155,29 +156,36 @@ class Brain
     {
         [$summary, $changes] = $this->validated($run, $result);
         DB::transaction(function () use ($run, $summary, $changes): void {
+            $current = BrainRun::query()->lockForUpdate()->find($run->id);
+            if (! $current || $current->status !== 'learning') {
+                return;
+            }
+            $sent = (array) ($current->settings['sent_preferences'] ?? []);
             $preferences = Preference::query()->lockForUpdate()->get()->keyBy('id');
-            $target = function (int $id) use ($preferences): ?Preference {
+            $target = function (int $id) use ($preferences, $sent): ?Preference {
                 $preference = $preferences->get($id);
+                $unchanged = array_key_exists($id, $sent) && $preference && $preference->text === $sent[$id];
 
-                return $preference && $preference->status === 'active' && $preference->source === 'learned' ? $preference : null;
+                return $unchanged && $preference->status === 'active' && $preference->source === 'learned' ? $preference : null;
             };
+            $duplicate = fn (string $text, ?int $except = null): bool => $preferences
+                ->contains(fn (Preference $preference): bool => $preference->id !== $except && $preference->status === 'active'
+                    && mb_strtolower($this->clean($preference->text)) === mb_strtolower($text));
             foreach (array_filter($changes, fn (array $change): bool => $change['op'] === 'retire') as $change) {
                 $target($change['id'])?->update(['status' => 'off', 'note' => $change['reason']]);
             }
             foreach (array_filter($changes, fn (array $change): bool => $change['op'] === 'update') as $change) {
                 $preference = $target($change['id']);
-                if ($preference) {
+                if ($preference && ! $duplicate($change['text'], $preference->id)) {
                     $evidence = array_values(array_unique([...array_filter((array) $preference->evidence, 'is_int'), ...$change['evidence']]));
                     $preference->update(['text' => $change['text'], 'evidence' => array_slice($evidence, -self::MAX_EVIDENCE), 'seen_at' => null]);
                 }
             }
-            $active = $preferences->where('status', 'active');
-            $texts = $active->map(fn (Preference $preference): string => mb_strtolower($this->clean($preference->text)))->flip();
-            $count = $active->count();
+            $count = $preferences->where('status', 'active')->count();
             $leads = Lead::query()->pluck('id', 'key');
             $capped = 0;
             foreach ($changes as $change) {
-                if ($change['op'] !== 'add' || $texts->has(mb_strtolower($change['text']))) {
+                if ($change['op'] !== 'add' || $duplicate($change['text'])) {
                     continue;
                 }
                 if ($count >= Preference::MAX_ACTIVE) {
@@ -185,18 +193,17 @@ class Brain
 
                     continue;
                 }
-                Preference::query()->create([
+                $preferences->push(Preference::query()->create([
                     'text' => $change['text'],
                     'lead_id' => $change['lead'] === null ? null : $leads->get($change['lead']),
                     'status' => 'active',
                     'source' => 'learned',
                     'evidence' => $change['evidence'],
                     'seen_at' => null,
-                ]);
-                $texts->put(mb_strtolower($change['text']), true);
+                ]));
                 $count++;
             }
-            $run->update([
+            $current->update([
                 'status' => 'completed',
                 'summary' => $summary.($capped > 0 ? " {$capped} preference(s) were not added because ".Preference::MAX_ACTIVE.' are already active.' : ''),
                 'error' => null,
@@ -256,11 +263,12 @@ class Brain
 
     private function line(mixed $value, int $position): string
     {
-        if (! is_string($value) || trim($value) === '' || mb_strlen($value) > 300 || preg_match('/[\x00-\x1F\x7F\x{0085}\x{2028}\x{2029}]/u', $value) !== 0) {
+        $clean = is_string($value) ? $this->clean($value) : '';
+        if ($clean === '' || mb_strlen($value) > 300 || preg_match('/[\x00-\x1F\x7F\x{0085}\x{2028}\x{2029}]/u', $value) !== 0) {
             $this->invalid("Change {$position} needs one line of 1 to 300 characters.");
         }
 
-        return $this->clean($value);
+        return $clean;
     }
 
     /**

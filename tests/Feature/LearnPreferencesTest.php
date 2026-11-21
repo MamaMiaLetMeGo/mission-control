@@ -85,6 +85,22 @@ class LearnPreferencesTest extends TestCase
         $this->assertSlotIsFree();
     }
 
+    public function test_a_blank_preference_text_fails_the_run_and_changes_nothing(): void
+    {
+        config(['mission.openai_api_key' => 'test-key']);
+        $run = $this->queuedRun();
+        $preference = Preference::factory()->learned()->create(['text' => 'Keep it.']);
+        $run->update(['settings' => [...$run->settings, 'sent_preferences' => [$preference->id => 'Keep it.']]]);
+        $result = ['type' => 'learn', 'success' => true, 'summary' => 'Changed.', 'usage' => ['input_tokens' => 5], 'changes' => [
+            ['op' => 'update', 'id' => $preference->id, 'text' => "\u{00A0}\u{00A0}", 'evidence' => [$run->decision_ids[0]]],
+        ]];
+
+        (new LearnPreferences($run->id))->handle($this->workerReturning($result), app(Brain::class));
+
+        $this->assertSame(['failed', 'The Brain returned changes that could not be used. Nothing was changed.'], [$run->refresh()->status, $run->error]);
+        $this->assertSame('Keep it.', $preference->refresh()->text);
+    }
+
     public function test_a_run_waits_when_every_slot_is_busy(): void
     {
         config(['mission.openai_api_key' => 'test-key', 'mission.max_parallel_runs' => 1]);
