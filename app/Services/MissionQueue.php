@@ -8,8 +8,10 @@ use Illuminate\Support\Arr;
 
 class MissionQueue
 {
+    public function __construct(private RunSlots $slots, private TokenBudget $tokens) {}
+
     /** @param array<string, mixed> $filters
-     * @return array{tasks: LengthAwarePaginator, counts: array<string, int>}
+     * @return array{tasks: LengthAwarePaginator, counts: array<string, int>, capacity: array{busy: int, slots: int, tokensUsed: int, tokenLimit: int}}
      */
     public function data(array $filters): array
     {
@@ -32,6 +34,8 @@ class MissionQueue
             $counts[$row->status] = (int) $row->aggregate;
         }
 
-        return compact('tasks', 'counts');
+        $capacity = ['busy' => $this->slots->busy(), 'slots' => $this->slots->limit(), 'tokensUsed' => $this->tokens->usedToday(), 'tokenLimit' => $this->tokens->limit()];
+
+        return compact('tasks', 'counts', 'capacity');
     }
 }

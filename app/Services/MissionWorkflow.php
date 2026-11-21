@@ -11,7 +11,7 @@ use Illuminate\Validation\ValidationException;
 
 class MissionWorkflow
 {
-    public function __construct(private MissionSettings $settings, private GitRepository $git, private MissionPreview $previews, private BrowserEvidence $evidence) {}
+    public function __construct(private MissionSettings $settings, private GitRepository $git, private MissionPreview $previews, private BrowserEvidence $evidence, private TokenBudget $tokens) {}
 
     public function queue(MissionTask $task): void
     {
@@ -24,12 +24,12 @@ class MissionWorkflow
             if (! $readiness['ready']) {
                 $this->reject(implode(' ', $readiness['issues']));
             }
-            if (MissionTask::query()->whereIn('status', ['queued', 'running'])->exists()) {
-                $this->reject('One task is already active. Wait for it to finish before starting another.');
-            }
             $settings = $this->settings->all();
             if (AgentRun::query()->where('created_at', '>=', now()->startOfDay())->count() >= $settings['daily_run_limit']) {
                 $this->reject('The daily run limit has been reached. Increase it in Settings or wait until tomorrow.');
+            }
+            if ($this->tokens->exhausted()) {
+                $this->reject('The daily token limit of '.$this->tokens->limit().' has been reached. Raise it in Settings or wait until tomorrow.');
             }
             $repository = realpath($settings['repository_path']);
             $repositoryRoot = $this->git->command($repository, ['rev-parse', '--show-toplevel']);

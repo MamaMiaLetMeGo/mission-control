@@ -160,6 +160,19 @@ class MissionProgressTest extends TestCase
         Queue::assertNothingPushed();
     }
 
+    public function test_queue_stats_show_busy_agents_and_tokens_used_today(): void
+    {
+        $this->forbidExternalWork();
+        config(['mission.max_parallel_runs' => 2, 'mission.daily_token_limit' => 2000000]);
+        AgentRun::factory()->create(['status' => 'running', 'usage' => ['input_tokens' => 1000, 'output_tokens' => 500]]);
+        AgentRun::factory()->create(['status' => 'queued']);
+
+        $html = $this->getJson(route('queue.status'))->assertOk()->json('html.stats');
+
+        $this->assertStringContainsString('1 of 2<span class="stat-caption">agents busy</span>', $html);
+        $this->assertStringContainsString('1,500 / 2,000,000 tokens today', $html);
+    }
+
     public function test_empty_selected_page_retains_navigation_when_filter_results_shrink(): void
     {
         $this->forbidExternalWork();

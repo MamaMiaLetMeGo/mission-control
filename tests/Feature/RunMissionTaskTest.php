@@ -6,8 +6,11 @@ use App\Jobs\RunMissionTask;
 use App\Models\AgentRun;
 use App\Models\MissionTask;
 use App\Services\CodexProcess;
+use App\Services\RunSlots;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Str;
 use RuntimeException;
@@ -77,8 +80,9 @@ class RunMissionTaskTest extends TestCase
 
     public function test_an_overlapping_delivery_does_not_fail_the_active_run(): void
     {
+        config(['mission.max_parallel_runs' => 1]);
         $run = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'queued']), 'task')->create();
-        $lock = Cache::lock('mission-execution', 60);
+        $lock = Cache::lock('mission-execution:1', 60);
         $lock->get();
         $worker = $this->mock(CodexProcess::class, fn ($mock) => $mock->shouldNotReceive('run'));
 
@@ -145,5 +149,96 @@ class RunMissionTaskTest extends TestCase
         $this->assertSame('failed', $run->refresh()->status);
         $this->assertSame('running', $fresh->refresh()->status);
         $this->assertDatabaseCount('agent_runs', 2);
+    }
+
+    public function test_a_run_waits_when_every_slot_is_busy(): void
+    {
+        config(['mission.openai_api_key' => 'test-key', 'mission.max_parallel_runs' => 1]);
+        $held = app(RunSlots::class)->acquire(60);
+        $run = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'queued']), 'task')->create();
+        $worker = $this->mock(CodexProcess::class, fn ($mock) => $mock->shouldNotReceive('run'));
+        $job = (new RunMissionTask($run->id))->withFakeQueueInteractions();
+
+        $job->handle($worker);
+
+        $job->assertReleased(15);
+        $job->assertNotFailed();
+        $this->assertSame('queued', $run->refresh()->status);
+        $this->assertSame('queued', $run->task->status);
+        $held->release();
+    }
+
+    public function test_two_runs_execute_side_by_side(): void
+    {
+        config(['mission.openai_api_key' => 'test-key', 'mission.max_parallel_runs' => 2]);
+        $held = Cache::lock('mission-execution:1', 60);
+        $this->assertTrue($held->get());
+        $run = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'queued']), 'task')->create();
+        $worker = $this->mock(CodexProcess::class, function ($mock): void {
+            $mock->shouldReceive('run')->once()->andReturn(['success' => true, 'tests' => ['exitCode' => 0], 'review' => ['verdict' => 'pass']]);
+        });
+        $job = (new RunMissionTask($run->id))->withFakeQueueInteractions();
+
+        $job->handle($worker);
+
+        $job->assertNotReleased();
+        $this->assertSame('completed', $run->refresh()->status);
+        $this->assertSame('review', $run->task->status);
+        $this->assertNotNull(app(RunSlots::class)->acquire(60), 'The second slot is released when the job finishes.');
+        $held->release();
+    }
+
+    public function test_a_waiting_run_retries_for_six_hours_instead_of_a_fixed_number_of_attempts(): void
+    {
+        $this->freezeTime();
+        $job = new RunMissionTask(1);
+
+        $this->assertSame(0, $job->tries);
+        $this->assertSame(1, $job->maxExceptions);
+        $this->assertSame(now()->addHours(6)->getTimestamp(), $job->retryUntil()->getTimestamp());
+    }
+
+    public function test_recovery_leaves_a_waiting_run_with_a_pending_job_and_fails_a_dead_running_run(): void
+    {
+        $this->freezeTime();
+        $root = storage_path('framework/testing/recovery-'.Str::uuid());
+        config(['mission.worktree_root' => $root]);
+        $waiting = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'queued']), 'task')->create(['status' => 'queued', 'updated_at' => now()->subMinutes(30)]);
+        $running = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'running']), 'task')->create(['status' => 'running', 'updated_at' => now()->subMinutes(30)]);
+        DB::table('jobs')->insert(['queue' => 'missions', 'payload' => '{}', 'attempts' => 3, 'reserved_at' => null, 'available_at' => now()->getTimestamp(), 'created_at' => now()->subMinutes(30)->getTimestamp()]);
+
+        Artisan::call('mission:recover');
+
+        $this->assertSame('queued', $waiting->refresh()->status);
+        $this->assertSame('queued', $waiting->task->status);
+        $this->assertSame('failed', $running->refresh()->status);
+        $this->assertSame('failed', $running->task->status);
+    }
+
+    public function test_recovery_fails_a_stale_queued_run_once_no_job_is_pending(): void
+    {
+        $this->freezeTime();
+        $waiting = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'queued']), 'task')->create(['status' => 'queued', 'updated_at' => now()->subMinutes(30)]);
+        DB::table('jobs')->insert(['queue' => 'default', 'payload' => '{}', 'attempts' => 0, 'reserved_at' => null, 'available_at' => now()->getTimestamp(), 'created_at' => now()->getTimestamp()]);
+
+        Artisan::call('mission:recover');
+
+        $this->assertSame('failed', $waiting->refresh()->status);
+    }
+
+    public function test_recovery_ignores_a_cache_lock_left_by_a_busy_slot(): void
+    {
+        $this->freezeTime();
+        $lock = Cache::lock('mission-execution:1', 60);
+        $lock->get();
+        $running = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'running']), 'task')->create(['status' => 'running', 'updated_at' => now()->subMinutes(30)]);
+
+        try {
+            Artisan::call('mission:recover');
+
+            $this->assertSame('failed', $running->refresh()->status);
+        } finally {
+            $lock->release();
+        }
     }
 }

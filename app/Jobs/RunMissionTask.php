@@ -4,9 +4,10 @@ namespace App\Jobs;
 
 use App\Models\AgentRun;
 use App\Services\CodexProcess;
+use App\Services\RunSlots;
+use DateTime;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 use Throwable;
@@ -15,15 +16,28 @@ class RunMissionTask implements ShouldQueue
 {
     use Queueable;
 
-    public int $tries = 1;
+    /**
+     * Unlimited attempts: a run waiting for a free slot is released back to the queue until retryUntil().
+     */
+    public int $tries = 0;
+
+    public int $maxExceptions = 1;
 
     public int $timeout = 810;
 
     public bool $failOnTimeout = true;
 
+    public int $dispatchedAt;
+
     public function __construct(public int $runId)
     {
         $this->onQueue('missions');
+        $this->dispatchedAt = now()->getTimestamp();
+    }
+
+    public function retryUntil(): DateTime
+    {
+        return now()->setTimestamp($this->dispatchedAt)->addHours(6);
     }
 
     public function handle(CodexProcess $worker): void
@@ -32,8 +46,10 @@ class RunMissionTask implements ShouldQueue
         if (! $run || $run->status !== 'queued' || $run->task->status !== 'queued') {
             return;
         }
-        $lock = Cache::lock('mission-execution', $this->timeout + 30);
-        if (! $lock->get()) {
+        $lock = app(RunSlots::class)->acquire($this->timeout + 30);
+        if (! $lock) {
+            $this->release(15);
+
             return;
         }
         try {

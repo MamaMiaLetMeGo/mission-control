@@ -46,6 +46,8 @@ class MissionSettingController extends Controller
             'max_runtime_seconds' => ['required', 'integer', 'min:60', 'max:720'],
             'max_tokens' => ['required', 'integer', 'min:1000', 'max:500000'],
             'daily_run_limit' => ['required', 'integer', 'min:1', 'max:100'],
+            'max_parallel_runs' => ['required', 'integer', 'min:1', 'max:4'],
+            'daily_token_limit' => ['required', 'integer', 'min:10000', 'max:50000000'],
             'preview_enabled' => ['required', 'boolean'],
             'preview_driver' => [$previewRule, 'required', Rule::in(['laravel', 'command'])],
             'preview_directory' => [$previewRule, 'required', 'string', 'max:500', function (string $attribute, mixed $value, Closure $fail): void {
@@ -83,7 +85,7 @@ class MissionSettingController extends Controller
         $git->command($path, ['rev-parse', '--verify', 'refs/heads/'.$data['base_branch']]);
         $data['repository_path'] = $path;
         $data['model'] = $data['model'] ?? '';
-        foreach (['max_runtime_seconds', 'max_tokens', 'daily_run_limit'] as $field) {
+        foreach (['max_runtime_seconds', 'max_tokens', 'daily_run_limit', 'max_parallel_runs', 'daily_token_limit'] as $field) {
             $data[$field] = (int) $data[$field];
         }
         Cache::lock('mission-workflow', 30)->block(5, function () use ($settings, $data): void {

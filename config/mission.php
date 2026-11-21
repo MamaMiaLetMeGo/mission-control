@@ -9,6 +9,8 @@ return [
     'max_runtime_seconds' => (int) env('MISSION_MAX_RUNTIME_SECONDS', 600),
     'max_tokens' => (int) env('MISSION_MAX_TOKENS', 200000),
     'daily_run_limit' => (int) env('MISSION_DAILY_RUN_LIMIT', 5),
+    'max_parallel_runs' => (int) env('MISSION_MAX_PARALLEL_RUNS', 3),
+    'daily_token_limit' => (int) env('MISSION_DAILY_TOKEN_LIMIT', 2000000),
     'preview_enabled' => (bool) env('MISSION_PREVIEW_ENABLED', false),
     'preview_driver' => env('MISSION_PREVIEW_DRIVER', 'laravel'),
     'preview_directory' => env('MISSION_PREVIEW_DIRECTORY', 'backend'),

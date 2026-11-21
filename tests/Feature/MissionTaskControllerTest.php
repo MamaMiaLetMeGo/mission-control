@@ -101,16 +101,35 @@ class MissionTaskControllerTest extends TestCase
         Queue::assertNothingPushed();
     }
 
-    public function test_an_active_task_blocks_another_run(): void
+    public function test_a_second_task_can_start_while_another_is_running(): void
     {
-        Queue::fake();
+        Queue::fake([RunMissionTask::class]);
         $this->readyEnvironment();
-        MissionTask::factory()->create(['status' => 'running']);
+        $this->fakeRepository();
+        $active = MissionTask::factory()->create(['status' => 'running']);
         $task = MissionTask::factory()->create();
 
         $response = $this->post(route('tasks.run', $task));
 
-        $response->assertSessionHasErrors(['task' => 'One task is already active. Wait for it to finish before starting another.']);
+        $response->assertRedirect(route('tasks.show', $task));
+        $response->assertSessionHasNoErrors();
+        $this->assertSame('running', $active->refresh()->status);
+        $this->assertSame('queued', $task->refresh()->status);
+        Queue::assertPushed(RunMissionTask::class, 1);
+    }
+
+    public function test_an_exhausted_daily_token_limit_blocks_another_run(): void
+    {
+        Queue::fake();
+        $this->freezeTime();
+        $this->readyEnvironment();
+        config(['mission.daily_token_limit' => 10000]);
+        AgentRun::factory()->create(['status' => 'completed', 'usage' => ['input_tokens' => 8000, 'output_tokens' => 2000]]);
+        $task = MissionTask::factory()->create();
+
+        $response = $this->post(route('tasks.run', $task));
+
+        $response->assertSessionHasErrors(['task' => 'The daily token limit of 10000 has been reached. Raise it in Settings or wait until tomorrow.']);
         $this->assertSame('backlog', $task->refresh()->status);
         Queue::assertNothingPushed();
     }
@@ -189,6 +208,14 @@ class MissionTaskControllerTest extends TestCase
     public function test_a_missing_task_returns_404(): void
     {
         $this->get('/tasks/99999')->assertNotFound();
+    }
+
+    private function fakeRepository(): void
+    {
+        $this->mock(GitRepository::class, function ($mock): void {
+            $mock->shouldReceive('command')->andReturn(base_path(), str_repeat('a', 40));
+            $mock->shouldReceive('remoteSnapshot')->andReturn(['ref' => 'refs/remotes/origin/main', 'revision' => str_repeat('a', 40)]);
+        });
     }
 
     private function readyEnvironment(): void
