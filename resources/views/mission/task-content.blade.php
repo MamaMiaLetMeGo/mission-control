@@ -9,7 +9,7 @@
     $latestRun = $task->runs->first();
     $runSettings = $latestRun?->settings ?? [];
     $isRefreshing = in_array($task->status, ['queued', 'running'], true) && ($runSettings['mode'] ?? null) === 'refresh';
-    $canRetryRefresh = in_array($task->status, ['review', 'approved', 'deferred'], true) && $task->revision && $task->error;
+    $canRetryRefresh = (in_array($task->status, ['review', 'approved', 'deferred'], true) && $task->revision && $task->error === \App\Services\MissionWorkflow::REFRESH_TOKEN_LIMIT) || \App\Services\MissionWorkflow::isFailedRefresh($task);
     $browser = $review['browser'] ?? [];
     $captureRequested = (bool) ($runSettings['preview_enabled'] ?? false);
     $captures = collect($browser['screenshots'] ?? [])->filter(fn ($capture) => is_array($capture) && isset($capture['file'], $capture['path'], $capture['phase'], $capture['viewport']) && in_array($capture['phase'], ['before', 'after'], true) && in_array($capture['viewport'], ['desktop', 'mobile'], true));

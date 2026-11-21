@@ -8,12 +8,13 @@ use App\Models\MissionTask;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class MissionWorkflow
 {
     private const RECHECKING = 'The base moved, so this change is being re-checked against it. Review the refreshed revision when it is ready.';
 
-    private const REFRESH_TOKEN_LIMIT = 'The base moved and the daily token limit is reached. Refresh this task tomorrow or raise the limit.';
+    public const REFRESH_TOKEN_LIMIT = 'The base moved and the daily token limit is reached. Refresh this task tomorrow or raise the limit.';
 
     private const REFRESHABLE = ['review', 'approved', 'deferred'];
 
@@ -56,7 +57,8 @@ class MissionWorkflow
     private function refreshWhileLocked(MissionTask $task): bool
     {
         $task->refresh();
-        if (! in_array($task->status, self::REFRESHABLE, true) || ! is_string($task->revision) || ! preg_match('/^[a-f0-9]{40,64}$/', $task->revision)) {
+        $source = $this->refreshSource($task);
+        if (! $source) {
             $this->reject('Only reviewed or approved tasks with a revision can be refreshed.');
         }
         if ($this->tokens->exhausted()) {
@@ -68,14 +70,48 @@ class MissionWorkflow
         if (! $readiness['ready']) {
             $this->reject(implode(' ', $readiness['issues']));
         }
-        $this->startRun($task, [
-            ...$this->settings->all(),
-            'mode' => 'refresh',
-            'source_revision' => $task->revision,
-            'previous_summary' => $this->previousSummary($task->recommendation ?: $task->title),
-        ]);
+        $this->startRun($task, [...$this->settings->all(), 'mode' => 'refresh', ...$source]);
 
         return true;
+    }
+
+    /**
+     * What a refresh of this task replays: its reviewed revision, or, for a task whose refresh run failed, the revision
+     * that refresh run was replaying. Null when the task has nothing reviewed to replay.
+     *
+     * @return array{source_revision: string, previous_summary: string}|null
+     */
+    private function refreshSource(MissionTask $task): ?array
+    {
+        if (in_array($task->status, self::REFRESHABLE, true) && $this->isRevision($task->revision)) {
+            return ['source_revision' => $task->revision, 'previous_summary' => $this->previousSummary($task->recommendation ?: $task->title)];
+        }
+        if (self::isFailedRefresh($task)) {
+            $settings = $task->runs()->first()->settings;
+            $summary = $settings['previous_summary'] ?? null;
+
+            return ['source_revision' => $settings['source_revision'], 'previous_summary' => $this->previousSummary(is_string($summary) && $summary !== '' ? $summary : $task->title)];
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether the task failed during a refresh run that still names the reviewed revision it was replaying.
+     */
+    public static function isFailedRefresh(MissionTask $task): bool
+    {
+        if ($task->status !== 'failed') {
+            return false;
+        }
+        $settings = $task->runs()->first()?->settings ?? [];
+
+        return ($settings['mode'] ?? null) === 'refresh' && is_string($settings['source_revision'] ?? null) && preg_match('/^[a-f0-9]{40,64}$/', $settings['source_revision']) === 1;
+    }
+
+    private function isRevision(mixed $revision): bool
+    {
+        return is_string($revision) && preg_match('/^[a-f0-9]{40,64}$/', $revision) === 1;
     }
 
     /**
@@ -214,7 +250,7 @@ class MissionWorkflow
 
     /**
      * Refresh every other reviewed or approved task that was reviewed against an older base. A refresh that cannot start
-     * leaves its task where it is with the reason, so it never undoes the merge that already happened.
+     * for any reason leaves its task where it is with a short reason, so a recorded merge never ends in an exception.
      */
     private function refreshOthersAfterMerge(MissionTask $merged, string $baseHead): void
     {
@@ -226,6 +262,9 @@ class MissionWorkflow
                 $this->refreshWhileLocked($task);
             } catch (ValidationException $exception) {
                 $task->update(['error' => collect($exception->errors())->flatten()->first()]);
+            } catch (Throwable $exception) {
+                report($exception);
+                $task->update(['error' => 'The base moved, but the re-check could not start. Refresh this task to try again.']);
             }
         }
     }

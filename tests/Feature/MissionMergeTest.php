@@ -6,10 +6,12 @@ use App\Jobs\RunMissionTask;
 use App\Models\AgentRun;
 use App\Models\MissionTask;
 use App\Services\GitRepository;
+use App\Services\MissionPreview;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
+use RuntimeException;
 use Symfony\Component\Process\Process;
 use Tests\TestCase;
 
@@ -155,6 +157,33 @@ class MissionMergeTest extends TestCase
         }
         $this->assertSame('changes_requested', $unrelated->refresh()->status);
         Queue::assertPushed(RunMissionTask::class, 2);
+    }
+
+    public function test_a_refresh_that_throws_after_a_merge_is_recorded_and_the_others_still_refresh(): void
+    {
+        Queue::fake();
+        [$task, $repository] = $this->reviewedTask();
+        $this->readyToRefresh();
+        $task->update(['status' => 'approved']);
+        $broken = $this->anotherReviewedTask($repository, $task->base_revision, 'approved');
+        $healthy = $this->anotherReviewedTask($repository, $task->base_revision, 'review', 'second');
+        $this->partialMock(MissionPreview::class, function ($mock) use ($broken): void {
+            $mock->shouldReceive('stop')->andReturnUsing(function (MissionTask $stopping) use ($broken): void {
+                if ($stopping->id === $broken->id) {
+                    throw new RuntimeException('Preview process table is unreadable.');
+                }
+            });
+        });
+
+        $response = $this->post(route('tasks.merge', $task), ['revision' => $task->revision]);
+
+        $response->assertRedirect(route('tasks.show', $task));
+        $response->assertSessionHasNoErrors();
+        $this->assertSame('merged', $task->refresh()->status);
+        $this->assertSame('approved', $broken->refresh()->status);
+        $this->assertSame('The base moved, but the re-check could not start. Refresh this task to try again.', $broken->error);
+        $this->assertSame('queued', $healthy->refresh()->status);
+        Queue::assertPushed(RunMissionTask::class, 1);
     }
 
     public function test_merging_does_not_refresh_a_task_already_reviewed_against_the_new_base(): void
