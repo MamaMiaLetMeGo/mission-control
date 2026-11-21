@@ -290,6 +290,7 @@ test('phase events are tagged with the code, test and review stages in order', a
   const result = await runMission(input, { agent: successfulAgent(), emit: (event) => events.push(event) });
   assert.equal(result.success, true);
   assert.deepEqual(events.filter((event) => event.stage).map((event) => event.stage), ['code', 'test', 'review']);
+  assert.equal(events.some((event) => event.stage === 'coordinate'), false);
 });
 
 async function commitOnBase(input, environment, file, content, message) {
@@ -400,4 +401,67 @@ test('a refresh of a change the base already contains fails with no code changes
   assert.match(refreshed.error, /produced no code changes/);
   assert.equal(refreshed.revision, '');
   assert.deepEqual(roles, []);
+});
+
+test('the result carries diff statistics and the mode', async (t) => {
+  const { input } = await fixture(t);
+  const result = await runMission(input, { agent: successfulAgent() });
+  assert.equal(result.success, true);
+  assert.equal(result.mode, 'implement');
+  assert.deepEqual(result.diff, { files: ['feature.txt'], additions: 2, deletions: 0 });
+});
+
+test('the diff counts binary files as zero lines and records the new path of renames', async (t) => {
+  const { input } = await fixture(t);
+  const result = await runMission(input, { agent: async (request) => {
+    if (request.role === 'implementation') {
+      await writeFile(path.join(request.workingDirectory, 'blob.bin'), Buffer.from([0, 1, 2, 3, 0]));
+      await rm(path.join(request.workingDirectory, 'original.txt'));
+      await writeFile(path.join(request.workingDirectory, 'moved.txt'), 'committed content\n');
+      return { response: 'Done.', usage: emptyUsage() };
+    }
+    return successfulAgent()(request);
+  } });
+  assert.equal(result.success, true);
+  assert.deepEqual([...result.diff.files].sort(), ['blob.bin', 'moved.txt']);
+  assert.equal(result.diff.additions, 0);
+  assert.equal(result.diff.deletions, 0);
+});
+
+test('team context is added to the implementation prompt after a coordinate phase', async (t) => {
+  const { input } = await fixture(t);
+  const prompts = [];
+  const events = [];
+  const base = successfulAgent();
+  const team = [
+    { title: 'Build the form', lead: 'Design Lead', status: 'review', summary: 'Added the form.', files: ['a.php', 'b.php'] },
+    { title: 'Write copy', lead: 'Unassigned', status: 'backlog', summary: '', files: [] },
+  ];
+  const result = await runMission({ ...input, goal: 'Launch the signup flow', team }, { agent: async (request) => { prompts.push(request); return base(request); }, emit: (event) => events.push(event) });
+  assert.equal(result.success, true);
+  const implementation = prompts.find((request) => request.role === 'implementation').prompt;
+  assert.match(implementation, /Goal this task belongs to:\nLaunch the signup flow/);
+  assert.match(implementation, /Team context\. Other sub-agents are working on these tasks under the same goal\. Do not redo their work, and avoid editing the files they changed unless this task requires it:\n- \[review\] Build the form \(Design Lead\): Added the form\. Files: a\.php, b\.php\n- \[backlog\] Write copy \(Unassigned\)$/m);
+  assert.deepEqual(events.filter((event) => event.stage).map((event) => event.stage), ['coordinate', 'code', 'test', 'review']);
+  assert.doesNotMatch(prompts.find((request) => request.role === 'review').prompt, /Team context/);
+});
+
+test('without a team there is no coordinate phase and no team text', async (t) => {
+  const { input } = await fixture(t);
+  const prompts = [];
+  const base = successfulAgent();
+  await runMission({ ...input, team: [] }, { agent: async (request) => { prompts.push(request); return base(request); } });
+  assert.doesNotMatch(prompts.find((request) => request.role === 'implementation').prompt, /Team context|Goal this task belongs to/);
+});
+
+test('more than 12 teammates or oversized fields are rejected', async (t) => {
+  const { input } = await fixture(t);
+  const mate = { title: 'T', lead: 'L', status: 'backlog', summary: '', files: [] };
+  assert.doesNotThrow(() => validateInput({ ...input, goal: 'g', team: Array(12).fill(mate) }));
+  const message = /team must list at most 12 teammates with short text fields\./;
+  assert.throws(() => validateInput({ ...input, team: Array(13).fill(mate) }), message);
+  assert.throws(() => validateInput({ ...input, team: [{ ...mate, summary: 'x'.repeat(601) }] }), message);
+  assert.throws(() => validateInput({ ...input, team: [{ ...mate, files: Array(31).fill('a') }] }), message);
+  assert.throws(() => validateInput({ ...input, team: [{ ...mate, title: 'a\0b' }] }), message);
+  assert.throws(() => validateInput({ ...input, goal: '' }), /goal/);
 });

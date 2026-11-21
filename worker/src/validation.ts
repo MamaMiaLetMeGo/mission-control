@@ -45,6 +45,21 @@ export function validateInput(value: unknown): MissionInput {
       throw new Error('lead must have a name (max 100 characters) and instructions (max 4000 characters).');
     }
   }
+  if (input.goal !== undefined
+    && (typeof input.goal !== 'string' || !input.goal.trim() || codePoints(input.goal) > 5000 || input.goal.includes('\0'))) {
+    throw new Error('goal must be a string of 1 to 5000 characters.');
+  }
+  if (input.team !== undefined) {
+    const text = (value: unknown, max: number): boolean => typeof value === 'string' && codePoints(value) <= max && !value.includes('\0');
+    if (!Array.isArray(input.team) || input.team.length > 12 || input.team.some((mate) => {
+      const entry = mate as Record<string, unknown>;
+      return !entry || typeof entry !== 'object' || Array.isArray(entry)
+        || !text(entry.title, 200) || !text(entry.lead, 100) || !text(entry.status, 30) || !text(entry.summary, 600)
+        || !Array.isArray(entry.files) || entry.files.length > 30 || entry.files.some((file) => !text(file, 300));
+    })) {
+      throw new Error('team must list at most 12 teammates with short text fields.');
+    }
+  }
   if (input.mode !== undefined && input.mode !== 'implement' && input.mode !== 'refresh') {
     throw new Error('mode must be "implement" or "refresh".');
   }

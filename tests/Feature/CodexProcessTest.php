@@ -88,6 +88,48 @@ PHP);
         }
     }
 
+    public function test_tasks_with_a_goal_send_the_goal_and_their_teammates_to_the_worker(): void
+    {
+        $directory = storage_path('framework/testing/codex-process-'.Str::uuid());
+        mkdir($directory, 0700, true);
+        file_put_contents($directory.'/fixture.php', <<<'PHP'
+<?php
+file_put_contents(__DIR__.'/payload.json', stream_get_contents(STDIN));
+echo json_encode(['type' => 'result', 'success' => false, 'error' => 'stopped'])."\n";
+PHP);
+        config(['mission.node_binary' => PHP_BINARY, 'mission.worker_path' => $directory.'/fixture.php']);
+        $settings = ['repository_path' => '/fixture/repository', 'base_branch' => 'main', 'test_command' => ['php', '-v'], 'max_runtime_seconds' => 60, 'max_tokens' => 1000];
+        $goal = Goal::factory()->create(['request' => 'Launch the signup flow']);
+        $designLead = Lead::query()->where('key', 'design')->firstOrFail();
+        $first = MissionTask::factory()->for($goal)->create(['goal_position' => 1, 'title' => 'First', 'status' => 'review', 'lead_id' => $designLead->id, 'recommendation' => str_repeat('r', 700), 'review_data' => ['diff' => ['files' => array_map(fn (int $n): string => "f{$n}.php", range(1, 40))]]]);
+        $own = MissionTask::factory()->for($goal)->create(['goal_position' => 2, 'status' => 'queued', 'lead_id' => null]);
+        $third = MissionTask::factory()->for($goal)->create(['goal_position' => 3, 'title' => 'Third', 'status' => 'backlog', 'lead_id' => null, 'recommendation' => null, 'review_data' => null]);
+        $run = AgentRun::factory()->for($own, 'task')->create(['settings' => $settings]);
+        $refresh = AgentRun::factory()->for($own, 'task')->create(['settings' => [...$settings, 'mode' => 'refresh', 'source_revision' => str_repeat('a', 40)]]);
+        $handMade = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'queued', 'goal_id' => null]), 'task')->create(['settings' => $settings]);
+
+        try {
+            app(CodexProcess::class)->run($run, fn (array $event) => null);
+            $payload = json_decode(file_get_contents($directory.'/payload.json'), true);
+            $this->assertSame('Launch the signup flow', $payload['goal']);
+            $this->assertCount(2, $payload['team']);
+            $this->assertSame(['title' => 'First', 'lead' => 'Design Lead', 'status' => 'review', 'summary' => str_repeat('r', 600), 'files' => array_slice($first->review_data['diff']['files'], 0, 30)], $payload['team'][0]);
+            $this->assertSame(['title' => 'Third', 'lead' => 'Unassigned', 'status' => 'backlog', 'summary' => '', 'files' => []], $payload['team'][1]);
+
+            app(CodexProcess::class)->run($refresh, fn (array $event) => null);
+            $payload = json_decode(file_get_contents($directory.'/payload.json'), true);
+            $this->assertArrayNotHasKey('goal', $payload);
+            $this->assertArrayNotHasKey('team', $payload);
+
+            app(CodexProcess::class)->run($handMade, fn (array $event) => null);
+            $payload = json_decode(file_get_contents($directory.'/payload.json'), true);
+            $this->assertArrayNotHasKey('goal', $payload);
+            $this->assertArrayNotHasKey('team', $payload);
+        } finally {
+            File::deleteDirectory($directory);
+        }
+    }
+
     public function test_refresh_runs_send_the_reviewed_revision_and_summary_to_the_worker(): void
     {
         $directory = storage_path('framework/testing/codex-process-'.Str::uuid());

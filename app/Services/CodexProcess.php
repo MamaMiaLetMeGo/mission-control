@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\AgentRun;
 use App\Models\Goal;
 use App\Models\Lead;
+use App\Models\MissionTask;
 use Closure;
 use RuntimeException;
 use Symfony\Component\Process\Process;
@@ -41,6 +42,16 @@ class CodexProcess
         ];
         if ($task->lead) {
             $payload['lead'] = ['name' => $task->lead->name, 'instructions' => $task->lead->instructions];
+        }
+        if ($task->goal && ($settings['mode'] ?? null) !== 'refresh') {
+            $payload['goal'] = $task->goal->request;
+            $payload['team'] = $task->goal->tasks()->with('lead')->whereKeyNot($task->id)->limit(12)->get()->map(fn (MissionTask $teammate): array => [
+                'title' => $teammate->title,
+                'lead' => $teammate->lead?->name ?? 'Unassigned',
+                'status' => $teammate->status,
+                'summary' => mb_substr((string) $teammate->recommendation, 0, 600),
+                'files' => array_slice($teammate->review_data['diff']['files'] ?? [], 0, 30),
+            ])->all();
         }
         if (! empty($settings['model'])) {
             $payload['model'] = $settings['model'];

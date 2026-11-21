@@ -20,6 +20,10 @@ export interface MissionInput {
   previewRoot?: string;
   previewDatabase?: PreviewDatabase;
   lead?: { name: string; instructions: string };
+  /** The request of the goal this task belongs to. */
+  goal?: string;
+  /** The other tasks under the same goal, shown to the implementation agent. */
+  team?: { title: string; lead: string; status: string; summary: string; files: string[] }[];
   /** `refresh` replays `sourceRevision` onto the current base instead of calling the implementation agent. Defaults to `implement`. */
   mode?: 'implement' | 'refresh';
   /** The already-reviewed commit to replay. Full 40-64 character hex hash; required in refresh mode and rejected otherwise. */
@@ -39,7 +43,7 @@ export interface TokenUsage {
 export interface WorkerEvent {
   type: 'phase' | 'thread' | 'usage' | 'message';
   role?: Role;
-  stage?: 'code' | 'test' | 'review';
+  stage?: 'coordinate' | 'code' | 'chase' | 'test' | 'security' | 'review';
   message?: string;
   threadId?: string;
   usage?: TokenUsage;
@@ -56,6 +60,8 @@ export interface Review {
 export interface WorkerResult {
   type: 'result';
   success: boolean;
+  mode: 'implement' | 'refresh';
+  diff: { files: string[]; additions: number; deletions: number };
   branch: string;
   worktreePath: string;
   revision: string;

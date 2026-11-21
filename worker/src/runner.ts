@@ -28,7 +28,7 @@ const reviewSchema = {
 
 export function initialResult(testCommand: string[] = []): WorkerResult {
   return {
-    type: 'result', success: false, branch: '', worktreePath: '', revision: '', baseRevision: '', artifactPath: '',
+    type: 'result', success: false, mode: 'implement', diff: { files: [], additions: 0, deletions: 0 }, branch: '', worktreePath: '', revision: '', baseRevision: '', artifactPath: '',
     summary: '', review: { verdict: 'changes_requested', summary: 'Independent review has not completed.', findings: [] },
     tests: { command: testCommand, exitCode: -1, output: 'Tests have not run.' }, usage: emptyUsage(),
   };
@@ -58,6 +58,7 @@ export async function runMission(rawInput: MissionInput, options: RunOptions = {
   let previewTask: { taskId: number; previewRoot: string } | undefined;
   try {
     const input = validateInput(rawInput);
+    result.mode = input.mode === 'refresh' ? 'refresh' : 'implement';
     if (!options.agent && !secret.trim()) {
       throw new Error('OPENAI_API_KEY is missing. Add it to the app environment before running a task.');
     }
@@ -142,6 +143,10 @@ export async function runMission(rawInput: MissionInput, options: RunOptions = {
       await replayReviewedChange(input.sourceRevision!, result.worktreePath, environment, signal);
       result.summary = redact(input.previousSummary ?? '', secret);
     } else {
+      const team = input.team ?? [];
+      if (team.length > 0) {
+        emit({ type: 'phase', role: 'implementation', stage: 'coordinate', message: 'Checking what the rest of the team is doing under this goal.' });
+      }
       emit({ type: 'phase', role: 'implementation', stage: 'code', message: 'Implementing the task in its isolated worktree.' });
       const implementation = await agent({
         role: 'implementation', workingDirectory: result.worktreePath, model: input.model, signal,
@@ -156,6 +161,11 @@ export async function runMission(rawInput: MissionInput, options: RunOptions = {
           'A separate runner will commit your changes, execute the configured tests, and request an independent review.',
           'Finish with a concise summary of the change and any limitations. Do not claim screenshots or tests that were not produced.',
           ...(input.lead ? [`Lead instructions:\n${input.lead.instructions}`] : []),
+          ...(input.goal && team.length > 0 ? [`Goal this task belongs to:\n${input.goal}`] : []),
+          ...(team.length > 0 ? [[
+            'Team context. Other sub-agents are working on these tasks under the same goal. Do not redo their work, and avoid editing the files they changed unless this task requires it:',
+            ...team.map((mate) => `- [${mate.status}] ${mate.title} (${mate.lead})${mate.summary ? `: ${mate.summary}` : ''}${mate.files.length ? ` Files: ${mate.files.join(', ')}` : ''}`),
+          ].join('\n')] : []),
           `Task title: ${input.title}`,
           `Request:\n${input.request}`,
           `Acceptance criteria:\n${input.acceptanceCriteria}`,
@@ -174,6 +184,19 @@ export async function runMission(rawInput: MissionInput, options: RunOptions = {
     const patch = await git(['diff', '--cached', '--binary', '--no-ext-diff', '--no-textconv'], result.worktreePath, environment, signal, 10 * 1024 * 1024, false);
     if (!patch) {
       throw new Error('The implementation produced no code changes to review.');
+    }
+    const numstat = (await git(['diff', '--cached', '--numstat', '-z', '--no-ext-diff', '--no-textconv'], result.worktreePath, environment, signal, 10 * 1024 * 1024, false)).split('\0');
+    for (let index = 0; index < numstat.length; index++) {
+      const match = /^(\d+|-)\t(\d+|-)\t(.*)$/s.exec(numstat[index] ?? '');
+      if (!match) continue;
+      let file = match[3];
+      if (file === '') {
+        file = numstat[index + 2] ?? '';
+        index += 2;
+      }
+      result.diff.additions += match[1] === '-' ? 0 : Number(match[1]);
+      result.diff.deletions += match[2] === '-' ? 0 : Number(match[2]);
+      if (file && result.diff.files.length < 200) result.diff.files.push(file);
     }
     if (secret && patch.includes(secret)) {
       throw new Error('The proposed change contains the API key. It was not committed or saved as an artifact.');
