@@ -1,0 +1,94 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Jobs\PlanGoal;
+use App\Models\Goal;
+use App\Models\Lead;
+use App\Models\MissionTask;
+use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Facades\Queue;
+use Tests\TestCase;
+
+class GoalControllerTest extends TestCase
+{
+    use LazilyRefreshDatabase;
+
+    public function test_giving_a_goal_creates_a_queued_goal_and_dispatches_planning(): void
+    {
+        Queue::fake();
+        $this->readyEnvironment();
+
+        $response = $this->post(route('goals.store'), ['request' => 'Make onboarding friendlier.']);
+
+        $goal = Goal::query()->firstOrFail();
+        $response->assertRedirect(route('goals.show', $goal))->assertSessionHas('status', 'Goal given to the Chief of Staff. Briefs will appear here shortly.');
+        $this->assertSame('queued', $goal->status);
+        Queue::assertPushed(PlanGoal::class);
+    }
+
+    public function test_the_dashboard_shows_why_a_goal_was_rejected(): void
+    {
+        Queue::fake();
+        $this->readyEnvironment();
+        config(['mission.openai_api_key' => '']);
+
+        $this->from(route('dashboard'))->post(route('goals.store'), ['request' => 'A goal.'])->assertRedirect(route('dashboard'))->assertSessionHasErrors('goal');
+        $this->followingRedirects()->from(route('dashboard'))->post(route('goals.store'), ['request' => 'A goal.'])->assertSee('Add the OpenAI API key');
+        $this->assertDatabaseCount('goals', 0);
+    }
+
+    public function test_a_goal_over_5000_characters_is_rejected(): void
+    {
+        Queue::fake();
+        $this->readyEnvironment();
+
+        $this->post(route('goals.store'), ['request' => str_repeat('a', 5001)])->assertSessionHasErrors('request');
+        $this->post(route('goals.store'), ['request' => ''])->assertSessionHasErrors('request');
+        $this->assertDatabaseCount('goals', 0);
+    }
+
+    public function test_the_goal_page_shows_the_overview_and_tasks_by_lead(): void
+    {
+        $goal = Goal::factory()->create(['request' => 'Ship onboarding.', 'overview' => 'Two briefs, in order.', 'usage' => ['input_tokens' => 1200, 'output_tokens' => 345]]);
+        $engineering = Lead::factory()->create(['name' => 'Engineering Lead']);
+        $design = Lead::factory()->create(['name' => 'Design Lead']);
+        $first = MissionTask::factory()->forGoal($goal, 1)->create(['title' => 'Build the form', 'lead_id' => $engineering->id]);
+        MissionTask::factory()->forGoal($goal, 2)->create(['title' => 'Polish the form', 'lead_id' => $design->id, 'depends_on' => [$first->id]]);
+
+        $this->get(route('goals.show', $goal))->assertOk()
+            ->assertSee('Ship onboarding.')->assertSee('Two briefs, in order.')->assertSee('Planned')
+            ->assertSee('1,545')->assertSee('Engineering Lead')->assertSee('Design Lead')
+            ->assertSeeInOrder(['Build the form', 'Polish the form'])
+            ->assertSee('Waiting for MC-'.str_pad((string) $first->id, 3, '0', STR_PAD_LEFT))
+            ->assertDontSee('http-equiv="refresh"', false);
+    }
+
+    public function test_a_planning_goal_reloads_itself_and_a_failed_goal_shows_its_error(): void
+    {
+        $this->get(route('goals.show', Goal::factory()->planning()->create()))->assertSee('http-equiv="refresh" content="5"', false);
+        $this->get(route('goals.show', Goal::factory()->failed()->create(['error' => 'The plan was not valid.'])))->assertSee('The plan was not valid.')->assertSee('Needs attention')->assertDontSee('http-equiv="refresh"', false);
+    }
+
+    public function test_the_dashboard_lists_recent_goals(): void
+    {
+        $goal = Goal::factory()->planning()->create(['request' => 'Improve search.']);
+
+        $this->get(route('dashboard'))->assertOk()->assertSee('Give the Chief of Staff a goal')->assertSee('Improve search.')->assertSee('Planning')->assertSee(route('goals.show', $goal));
+    }
+
+    public function test_the_task_page_and_queue_link_to_the_goal(): void
+    {
+        $goal = Goal::factory()->create(['request' => 'Improve search.']);
+        $dependency = MissionTask::factory()->forGoal($goal, 1)->create();
+        $task = MissionTask::factory()->forGoal($goal, 2)->create(['depends_on' => [$dependency->id]]);
+
+        $this->get(route('tasks.show', $task))->assertOk()->assertSee('Part of goal:')->assertSee('Improve search.')->assertSee(route('goals.show', $goal))->assertSee('Waiting for MC-'.str_pad((string) $dependency->id, 3, '0', STR_PAD_LEFT));
+        $this->get(route('dashboard'))->assertSee('queue-goal-tag', false);
+    }
+
+    private function readyEnvironment(): void
+    {
+        config(['mission.openai_api_key' => 'test-key-not-a-real-secret', 'mission.repository_path' => base_path(), 'mission.base_branch' => 'main', 'mission.worker_path' => base_path('artisan'), 'mission.test_command' => ['php', 'artisan', 'test']]);
+    }
+}

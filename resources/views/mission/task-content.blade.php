@@ -34,8 +34,11 @@
 @endphp
 <div data-task-content data-run-id="{{ $latestRun?->id ?? '' }}" data-task-status="{{ $task->status }}" data-revision="{{ $task->revision ?? '' }}">
 <a href="{{ route('dashboard') }}" class="text-link text-muted mb-7">@include('mission.icon', ['name' => 'back', 'class' => 'size-4'])Back to queue</a>
+@if($task->goal)
+<p class="text-xs text-muted mb-4">Part of goal: <a class="text-link" href="{{ route('goals.show', $task->goal) }}">{{ \Illuminate\Support\Str::limit($task->goal->request, 80) }}</a></p>
+@endif
 <div class="page-heading items-start" data-task-live="heading">
-    <div class="min-w-0"><div class="flex flex-wrap items-center gap-3 mb-3"><p class="eyebrow mb-0">MC-{{ str_pad((string) $task->id, 3, '0', STR_PAD_LEFT) }}</p><span class="status-badge status-{{ $task->status }}">{{ $statusLabels[$task->status] ?? ucfirst($task->status) }}</span></div><h1 class="task-page-title">{{ $task->title }}</h1><p class="page-description">{{ $task->lead?->name ?? 'Unassigned' }} <span class="px-1 text-line">/</span> {{ ucfirst($task->priority) }} priority <span class="px-1 text-line">/</span> Added {{ $task->created_at->diffForHumans() }}</p></div>
+    <div class="min-w-0"><div class="flex flex-wrap items-center gap-3 mb-3"><p class="eyebrow mb-0">MC-{{ str_pad((string) $task->id, 3, '0', STR_PAD_LEFT) }}</p><span class="status-badge status-{{ $task->status }}">{{ $statusLabels[$task->status] ?? ucfirst($task->status) }}</span></div><h1 class="task-page-title">{{ $task->title }}</h1><p class="page-description">{{ $task->lead?->name ?? 'Unassigned' }} <span class="px-1 text-line">/</span> {{ ucfirst($task->priority) }} priority <span class="px-1 text-line">/</span> Added {{ $task->created_at->diffForHumans() }}</p>@foreach($task->waitingOn() as $dependency)<p class="text-xs text-muted mt-2">Waiting for MC-{{ str_pad((string) $dependency->id, 3, '0', STR_PAD_LEFT) }}</p>@endforeach</div>
     @if(in_array($task->status, ['queued', 'running']))<a href="{{ route('tasks.show', $task) }}" class="button button-secondary shrink-0">@include('mission.icon', ['name' => 'refresh', 'class' => 'size-4'])Refresh status</a>@endif
 </div>
 <div data-task-live="phase">

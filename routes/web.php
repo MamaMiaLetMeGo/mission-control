@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DesktopHealthController;
+use App\Http\Controllers\GoalController;
 use App\Http\Controllers\LeadController;
 use App\Http\Controllers\MissionPreviewController;
 use App\Http\Controllers\MissionSettingController;
@@ -44,6 +45,8 @@ Route::post('/tasks/{task}/production/refresh', [ProductionPublicationController
 Route::post('/tasks/{task}/production/merge', [ProductionPublicationController::class, 'merge'])->name('tasks.production.merge');
 Route::post('/tasks/{task}/production/close-conflict', [ProductionPublicationController::class, 'closeConflict'])->name('tasks.production.close-conflict');
 Route::get('/tasks/{task}/production/diff', [ProductionPublicationController::class, 'diff'])->name('tasks.production.diff');
+Route::post('/goals', [GoalController::class, 'store'])->name('goals.store');
+Route::get('/goals/{goal}', [GoalController::class, 'show'])->name('goals.show');
 Route::get('/settings', [MissionSettingController::class, 'edit'])->name('settings.edit');
 Route::post('/settings', [MissionSettingController::class, 'update'])->name('settings.update');
 Route::post('/leads', [LeadController::class, 'store'])->name('leads.store');

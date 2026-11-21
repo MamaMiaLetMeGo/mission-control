@@ -15,7 +15,7 @@ class MissionQueue
      */
     public function data(array $filters): array
     {
-        $query = MissionTask::query()->select(['id', 'title', 'lead_id', 'priority', 'status', 'created_at'])->with('lead:id,key,name')->withCount(['runs', 'decisions']);
+        $query = MissionTask::query()->select(['id', 'title', 'lead_id', 'goal_id', 'priority', 'status', 'created_at'])->with('lead:id,key,name')->withCount(['runs', 'decisions']);
         if (! empty($filters['status'])) {
             $query->where('status', $filters['status']);
         }
