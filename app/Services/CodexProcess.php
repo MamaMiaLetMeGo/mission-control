@@ -3,6 +3,9 @@
 namespace App\Services;
 
 use App\Models\AgentRun;
+use App\Models\Goal;
+use App\Models\Lead;
+use App\Models\MissionTask;
 use Closure;
 use RuntimeException;
 use Symfony\Component\Process\Process;
@@ -36,9 +39,27 @@ class CodexProcess
             'preview' => $this->missionSettings->previewConfiguration($settings),
             'previewRoot' => config('mission.preview_root'),
             'previewDatabase' => config('mission.preview_database'),
+            'reviewRounds' => ($settings['mode'] ?? null) === 'refresh' ? 0 : max(0, min(3, (int) ($settings['review_rounds'] ?? 0))),
         ];
         if ($task->lead) {
             $payload['lead'] = ['name' => $task->lead->name, 'instructions' => $task->lead->instructions];
+        }
+        if ($task->goal && ($settings['mode'] ?? null) !== 'refresh') {
+            $goal = mb_substr(str_replace("\0", '', (string) $task->goal->request), 0, 5000);
+            $clean = fn (mixed $value, int $max): string => mb_substr(preg_replace('/[\x00-\x1F\x7F]/u', ' ', (string) $value) ?? '', 0, $max);
+            if (trim($goal) !== '') {
+                $payload['goal'] = $goal;
+            }
+            $payload['team'] = $task->goal->tasks()->with('lead')->whereKeyNot($task->id)->limit(12)->get()->map(fn (MissionTask $teammate): array => [
+                'title' => $clean($teammate->title, 200),
+                'lead' => $clean($teammate->lead?->name ?? 'Unassigned', 100),
+                'status' => $clean($teammate->status, 30),
+                'summary' => $clean($teammate->recommendation, 600),
+                'files' => array_slice(array_values(array_filter(
+                    (array) ($teammate->review_data['diff']['files'] ?? []),
+                    fn (mixed $file): bool => is_string($file) && $file !== '' && mb_strlen($file) <= 300 && preg_match('/[\x00-\x1F\x7F]/u', $file) === 0,
+                )), 0, 30),
+            ])->all();
         }
         if (! empty($settings['model'])) {
             $payload['model'] = $settings['model'];
@@ -48,18 +69,58 @@ class CodexProcess
             $payload['sourceRevision'] = $settings['source_revision'] ?? null;
             $payload['previousSummary'] = $settings['previous_summary'] ?? '';
         }
+
+        return $this->stream($payload, $settings['max_runtime_seconds'], 'result', $onEvent, 'The worker stopped without a review package. ');
+    }
+
+    /**
+     * Run the planning agent for a goal and return its final `plan` event.
+     *
+     * @param  Closure(array<string, mixed>): void  $onEvent
+     * @return array<string, mixed>
+     */
+    public function plan(Goal $goal, Closure $onEvent): array
+    {
+        $settings = $goal->settings;
+        $payload = [
+            'mode' => 'plan',
+            'goalId' => $goal->id,
+            'goal' => $goal->request,
+            'leads' => Lead::query()->active()->orderBy('id')->limit(20)->get()->map(fn (Lead $lead): array => ['key' => $lead->key, 'name' => $lead->name, 'instructions' => $lead->instructions])->all(),
+            'repositoryPath' => $settings['repository_path'],
+            'baseBranch' => $settings['base_branch'],
+            'worktreeRoot' => config('mission.worktree_root'),
+            'maxRuntimeSeconds' => $settings['max_runtime_seconds'],
+            'maxTokens' => $settings['max_tokens'],
+        ];
+        if (! empty($settings['model'])) {
+            $payload['model'] = $settings['model'];
+        }
+
+        return $this->stream($payload, $settings['max_runtime_seconds'], 'plan', $onEvent, 'The planner stopped without a plan. ');
+    }
+
+    /**
+     * Run the worker with the payload, pass every event except the final one to $onEvent and return the final event.
+     *
+     * @param  array<string, mixed>  $payload
+     * @param  Closure(array<string, mixed>): void  $onEvent
+     * @return array<string, mixed>
+     */
+    private function stream(array $payload, int $maxRuntimeSeconds, string $finalType, Closure $onEvent, string $missingMessage): array
+    {
         $process = new Process([config('mission.node_binary'), config('mission.worker_path')], base_path(), ['OPENAI_API_KEY' => config('mission.openai_api_key')]);
         $process->setInput(json_encode($payload, JSON_THROW_ON_ERROR));
-        $process->setTimeout($settings['max_runtime_seconds'] + 30);
+        $process->setTimeout($maxRuntimeSeconds + 30);
         $buffer = '';
         $stderr = '';
         $result = null;
-        $consume = function (string $line) use (&$result, $onEvent): void {
+        $consume = function (string $line) use (&$result, $onEvent, $finalType): void {
             $event = json_decode($this->redact($line), true);
             if (! is_array($event) || ! is_string($event['type'] ?? null)) {
                 return;
             }
-            if ($event['type'] === 'result') {
+            if ($event['type'] === $finalType) {
                 $result = $event;
             } else {
                 $onEvent($event);
@@ -86,7 +147,7 @@ class CodexProcess
             $consume($buffer);
         }
         if (! is_array($result)) {
-            throw new RuntimeException('The worker stopped without a review package. '.$this->redact($stderr));
+            throw new RuntimeException($missingMessage.$this->redact($stderr));
         }
         if (! $process->isSuccessful()) {
             $result['success'] = false;

@@ -150,15 +150,60 @@ class MissionTaskControllerTest extends TestCase
         Queue::assertNothingPushed();
     }
 
+    public function test_the_task_page_says_how_many_times_reviewer_findings_were_fixed(): void
+    {
+        $fixed = MissionTask::factory()->readyForReview()->create(['review_data' => ['success' => true, 'reviewRounds' => 2, 'tests' => ['exitCode' => 0], 'review' => ['verdict' => 'pass', 'summary' => 'Good.', 'findings' => []], 'security' => ['verdict' => 'pass', 'summary' => 'No security problems found.', 'findings' => []]]]);
+        $direct = MissionTask::factory()->readyForReview()->create(['review_data' => ['success' => true, 'reviewRounds' => 0, 'tests' => ['exitCode' => 0], 'review' => ['verdict' => 'pass', 'summary' => 'Good.', 'findings' => []], 'security' => ['verdict' => 'pass', 'summary' => 'No security problems found.', 'findings' => []]]]);
+
+        $this->get(route('tasks.show', $fixed))->assertOk()->assertSee('The sub-agent fixed reviewer findings 2 time(s) before this review.');
+        $this->get(route('tasks.show', $direct))->assertOk()->assertDontSee('fixed reviewer findings');
+    }
+
+    public function test_the_fix_count_shows_for_a_final_rejection_but_not_when_the_last_review_never_completed(): void
+    {
+        $rejected = MissionTask::factory()->readyForReview()->create(['review_data' => ['success' => false, 'reviewRounds' => 1, 'error' => 'The independent reviewer requested changes.', 'tests' => ['exitCode' => 0], 'review' => ['verdict' => 'changes_requested', 'summary' => 'Still wrong.', 'findings' => ['Wrong.']]]]);
+        $unfinished = MissionTask::factory()->readyForReview()->create(['review_data' => ['success' => false, 'reviewRounds' => 1, 'error' => 'The configured tests failed (exit 3).', 'tests' => ['exitCode' => 3], 'review' => ['verdict' => 'changes_requested', 'summary' => 'Independent review has not completed.', 'findings' => []]]]);
+
+        $this->get(route('tasks.show', $rejected))->assertOk()->assertSee('The sub-agent fixed reviewer findings 1 time(s) before this review.');
+        $this->get(route('tasks.show', $unfinished))->assertOk()->assertDontSee('fixed reviewer findings');
+    }
+
     public function test_approval_requires_passing_tests_and_independent_review(): void
     {
-        $task = MissionTask::factory()->readyForReview()->create(['review_data' => ['success' => true, 'tests' => ['exitCode' => 1], 'review' => ['verdict' => 'pass']]]);
+        $task = MissionTask::factory()->readyForReview()->create(['review_data' => ['success' => true, 'tests' => ['exitCode' => 1], 'review' => ['verdict' => 'pass'], 'security' => ['verdict' => 'pass', 'summary' => 'No security problems found.', 'findings' => []]]]);
 
         $response = $this->post(route('tasks.decide', $task), ['action' => 'approve', 'revision' => $task->revision]);
 
-        $response->assertSessionHasErrors('task');
+        $response->assertSessionHasErrors(['task' => 'Approval requires passing tests, an independent review and a security check of this revision. Refresh or re-run a task reviewed before security checks existed.']);
         $this->assertSame('review', $task->refresh()->status);
         $this->assertDatabaseCount('decisions', 0);
+    }
+
+    public function test_approval_requires_a_passing_security_check(): void
+    {
+        $missing = MissionTask::factory()->readyForReview()->create(['review_data' => ['success' => true, 'tests' => ['exitCode' => 0], 'review' => ['verdict' => 'pass']]]);
+        $failed = MissionTask::factory()->readyForReview()->create(['review_data' => ['success' => true, 'tests' => ['exitCode' => 0], 'review' => ['verdict' => 'pass'], 'security' => ['verdict' => 'fail', 'summary' => 'Injection.', 'findings' => []]]]);
+
+        foreach ([$missing, $failed] as $task) {
+            $this->post(route('tasks.decide', $task), ['action' => 'approve', 'revision' => $task->revision])
+                ->assertSessionHasErrors(['task' => 'Approval requires passing tests, an independent review and a security check of this revision. Refresh or re-run a task reviewed before security checks existed.']);
+            $this->assertSame('review', $task->refresh()->status);
+        }
+        $this->assertDatabaseCount('decisions', 0);
+    }
+
+    public function test_the_task_page_shows_the_escaped_security_check(): void
+    {
+        $task = MissionTask::factory()->readyForReview()->create(['artifact_path' => '/tmp/evidence', 'review_data' => ['success' => false, 'tests' => ['exitCode' => 0], 'review' => ['verdict' => 'pass', 'summary' => 'Good.', 'findings' => []], 'security' => ['verdict' => 'fail', 'summary' => 'The automatic scan found a high-severity problem. Looks fine.', 'findings' => [['severity' => 'high', 'file' => 'config.js', 'note' => 'An AWS access key ID was added.'], ['severity' => 'low', 'file' => 'view.blade.php', 'note' => '<script>alert(1)</script>']]]]]);
+
+        $this->get(route('tasks.show', $task))->assertOk()
+            ->assertSee('Security check')
+            ->assertSee('The automatic scan found a high-severity problem. Looks fine.')
+            ->assertSeeInOrder(['high', 'config.js', 'An AWS access key ID was added.', 'low', 'view.blade.php'])
+            ->assertSee('&lt;script&gt;alert(1)&lt;/script&gt;', false)
+            ->assertDontSee('<script>alert(1)</script>', false)
+            ->assertSee(route('tasks.artifact', ['task' => $task, 'file' => 'security.json']), false)
+            ->assertDontSee('name="action" value="approve"', false);
     }
 
     public function test_approval_is_bound_to_the_revision_shown_to_the_user(): void

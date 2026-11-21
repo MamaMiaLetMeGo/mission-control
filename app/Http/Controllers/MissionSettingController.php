@@ -35,6 +35,8 @@ class MissionSettingController extends Controller
                 $request->merge([$key => json_decode($request->input($key), true)]);
             }
         }
+        $autoStart = $request->boolean('auto_start');
+        $request->merge(['auto_start' => $autoStart]);
         $previewEnabled = $request->boolean('preview_enabled');
         $previewRule = Rule::excludeIf(! $previewEnabled);
         $data = $request->validate([
@@ -44,9 +46,11 @@ class MissionSettingController extends Controller
             'test_command' => ['present', 'array', 'list', 'max:30'],
             'test_command.*' => ['required', 'string', 'max:2000', 'not_regex:/\x00/'],
             'max_runtime_seconds' => ['required', 'integer', 'min:60', 'max:720'],
-            'max_tokens' => ['required', 'integer', 'min:1000', 'max:500000'],
+            'max_tokens' => ['required', 'integer', 'min:1000', 'max:1000000'],
             'daily_run_limit' => ['required', 'integer', 'min:1', 'max:100'],
             'max_parallel_runs' => ['required', 'integer', 'min:1', 'max:4'],
+            'auto_start' => ['required', 'boolean'],
+            'review_rounds' => ['required', 'integer', 'min:0', 'max:3'],
             'daily_token_limit' => ['required', 'integer', 'min:10000', 'max:50000000'],
             'preview_enabled' => ['required', 'boolean'],
             'preview_driver' => [$previewRule, 'required', Rule::in(['laravel', 'command'])],
@@ -66,6 +70,7 @@ class MissionSettingController extends Controller
             'preview_ttl_seconds' => [$previewRule, 'required', 'integer', 'min:60', 'max:3600'],
         ]);
         $data['preview_enabled'] = $previewEnabled;
+        $data['auto_start'] = $autoStart;
         if ($previewEnabled) {
             if (! collect($data['preview_command'])->contains(fn (string $argument): bool => str_contains($argument, '{port}'))) {
                 throw ValidationException::withMessages(['preview_command' => 'The preview command must include {port} so each preview gets its own local port.']);
@@ -85,7 +90,7 @@ class MissionSettingController extends Controller
         $git->command($path, ['rev-parse', '--verify', 'refs/heads/'.$data['base_branch']]);
         $data['repository_path'] = $path;
         $data['model'] = $data['model'] ?? '';
-        foreach (['max_runtime_seconds', 'max_tokens', 'daily_run_limit', 'max_parallel_runs', 'daily_token_limit'] as $field) {
+        foreach (['max_runtime_seconds', 'max_tokens', 'daily_run_limit', 'max_parallel_runs', 'review_rounds', 'daily_token_limit'] as $field) {
             $data[$field] = (int) $data[$field];
         }
         Cache::lock('mission-workflow', 30)->block(5, function () use ($settings, $data): void {

@@ -142,6 +142,45 @@ class StagingPublicationTest extends TestCase
         $this->assertSame(0, $task->decisions()->where('action', 'merge_staging')->count());
     }
 
+    #[TestWith(['REVIEW_REQUIRED', 'GitHub requires an approving review on this pull request.', 'Review required'])]
+    #[TestWith(['CHANGES_REQUESTED', 'A GitHub reviewer requested changes on this pull request.', 'Changes requested'])]
+    public function test_a_required_github_review_prevents_staging_merge(string $decision, string $blocker, string $label): void
+    {
+        [$task, , $integration] = $this->fixture(published: true);
+        $this->allowOrigin($task, $integration);
+        $this->mock(GitHubProcess::class, function ($mock) use ($task, $decision): void {
+            $mock->shouldReceive('json')->twice()->withArgs(fn ($repository, $args): bool => $args[1] === 'view' && str_contains($args[4], 'reviewDecision'))->andReturn([...$this->pull($task), 'reviewDecision' => $decision]);
+            $mock->shouldReceive('json')->twice()->withArgs(fn ($repository, $args): bool => $args[1] === 'checks')->andReturn([['name' => 'Backend', 'bucket' => 'pass', 'link' => null]]);
+            $mock->shouldNotReceive('command');
+        });
+
+        $this->postJson(route('tasks.publication.refresh', $task), ['revision' => $task->revision])->assertOk()->assertJsonPath('publication.state', 'checks_pending')->assertJsonPath('publication.can_merge', false)->assertJsonPath('publication.review_decision', $decision);
+        $this->postJson(route('tasks.publication.merge', $task), ['revision' => $task->revision])->assertUnprocessable()->assertJsonValidationErrors('publication');
+
+        $this->assertContains($blocker, $task->refresh()->publication['blockers']);
+        $this->assertSame($decision, $task->publication['review_decision']);
+        $this->assertStringContainsString('GitHub review: '.$label, view('mission.staging-publication', ['task' => $task, 'publication' => app(StagingPublication::class)->status($task)])->render());
+        $this->assertSame(0, $task->decisions()->where('action', 'merge_staging')->count());
+    }
+
+    #[TestWith(['APPROVED', 'APPROVED', 'Approved'])]
+    #[TestWith(['', null, 'Not required'])]
+    #[TestWith([null, null, 'Not required'])]
+    #[TestWith(['SOMETHING_NEW', null, 'Not required'])]
+    public function test_an_approved_or_unrequired_github_review_does_not_block_staging(?string $decision, ?string $stored, string $label): void
+    {
+        [$task, , $integration] = $this->fixture(published: true);
+        $this->allowOrigin($task, $integration);
+        $this->mock(GitHubProcess::class, function ($mock) use ($task, $decision): void {
+            $mock->shouldReceive('json')->once()->withArgs(fn ($repository, $args): bool => $args[1] === 'view')->andReturn([...$this->pull($task), 'reviewDecision' => $decision]);
+            $mock->shouldReceive('json')->once()->withArgs(fn ($repository, $args): bool => $args[1] === 'checks')->andReturn([['name' => 'Backend', 'bucket' => 'pass', 'link' => null]]);
+        });
+
+        $this->postJson(route('tasks.publication.refresh', $task), ['revision' => $task->revision])->assertOk()->assertJsonPath('publication.state', 'ready')->assertJsonPath('publication.can_merge', true)->assertJsonPath('publication.review_decision', $stored);
+
+        $this->assertStringContainsString('GitHub review: '.$label, view('mission.staging-publication', ['task' => $task, 'publication' => app(StagingPublication::class)->status($task->refresh())])->render());
+    }
+
     public function test_a_changed_pr_head_cannot_use_the_old_review(): void
     {
         [$task, , $integration] = $this->fixture(published: true);
@@ -345,7 +384,7 @@ class StagingPublicationTest extends TestCase
         $revision = $this->git($worktree, ['rev-parse', 'HEAD']);
         $this->git($integration, ['merge', '--ff-only', $revision]);
         config(['mission.repository_path' => $integration, 'mission.base_branch' => 'integration-base', 'mission.worktree_root' => dirname($worktree), 'mission.integration_root' => dirname($integration)]);
-        $result = ['success' => true, 'revision' => $revision, 'baseRevision' => $base, 'tests' => ['exitCode' => 0, 'command' => ['php', '-l', 'view.blade.php']], 'review' => ['verdict' => 'pass', 'summary' => 'The heading change is correct.']];
+        $result = ['success' => true, 'revision' => $revision, 'baseRevision' => $base, 'tests' => ['exitCode' => 0, 'command' => ['php', '-l', 'view.blade.php']], 'review' => ['verdict' => 'pass', 'summary' => 'The heading change is correct.'], 'security' => ['verdict' => 'pass', 'summary' => 'No security problems found.', 'findings' => []]];
         $task = MissionTask::factory()->create(['status' => 'merged', 'request' => 'internal workflow instructions', 'recommendation' => 'The homepage section now says Available Languages.', 'revision' => $revision, 'base_revision' => $base, 'branch' => 'mission/task-test', 'worktree_path' => $worktree, 'review_data' => $result]);
         AgentRun::factory()->for($task, 'task')->create(['status' => 'completed', 'result' => $result, 'settings' => ['repository_path' => $repository, 'base_branch' => 'integration-base', 'preview_enabled' => false]]);
         foreach (['approve', 'merge'] as $action) {

@@ -24,6 +24,17 @@ class MissionListenCommandTest extends TestCase
         ], MissionListenCommand::childCommand());
     }
 
+    public function test_the_scheduler_is_supervised_alongside_four_queue_listeners(): void
+    {
+        $commands = MissionListenCommand::childCommands(4);
+
+        $this->assertCount(5, $commands);
+        $this->assertSame(MissionListenCommand::childCommand(), $commands[0]);
+        $this->assertSame(MissionListenCommand::childCommand(), $commands[3]);
+        $this->assertSame([PHP_BINARY, 'artisan', 'schedule:work', '--no-interaction'], $commands[4]);
+        $this->assertCount(2, MissionListenCommand::childCommands(1));
+    }
+
     #[DataProvider('invalidProcessCounts')]
     public function test_process_count_outside_one_to_four_fails(string $count): void
     {

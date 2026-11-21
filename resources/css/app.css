@@ -122,6 +122,11 @@
     .status-merged, .status-completed, .status-succeeded { @apply border-[#dbeadf] bg-[#eef7f0] text-[#568061]; }
     .status-failed, .status-rejected { @apply border-[#edd9dd] bg-[#faf0f2] text-[#a55d68]; }
     .status-changes_requested, .status-deferred { @apply border-[#eadfc9] bg-[#fbf5e9] text-[#9c7b3f]; }
+    .signal-dot { @apply inline-block size-2.5 shrink-0 rounded-full; }
+    .signal-red { @apply bg-[#a55d68]; }
+    .signal-yellow { @apply bg-[#9c7b3f]; }
+    .signal-green { @apply bg-[#568061]; }
+    .signal-reason { @apply text-muted; }
     .priority { @apply inline-block text-[9px] font-medium; }
     .priority-high { @apply text-[#a18448]; }
     .priority-urgent { @apply text-danger; }

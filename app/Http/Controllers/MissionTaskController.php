@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Lead;
 use App\Models\MissionTask;
 use App\Services\BrowserEvidence;
+use App\Services\ChiefOfStaff;
 use App\Services\MissionPreview;
 use App\Services\MissionTaskViewData;
 use App\Services\MissionWorkflow;
@@ -18,6 +19,7 @@ use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use Throwable;
 
 class MissionTaskController extends Controller
 {
@@ -114,13 +116,18 @@ class MissionTaskController extends Controller
     {
         $data = $request->validate(['revision' => ['required', 'string', 'regex:/^[a-f0-9]{40,64}$/']]);
         $workflow->merge($task, $data['revision']);
+        try {
+            app(ChiefOfStaff::class)->dispatch();
+        } catch (Throwable $exception) {
+            report($exception);
+        }
 
         return to_route('tasks.show', $task)->with('status', 'Approved revision merged locally.');
     }
 
     public function artifact(MissionTask $task, string $file): BinaryFileResponse
     {
-        abort_unless(in_array($file, ['diff.patch', 'tests.txt', 'review.json', 'result.json'], true), 404);
+        abort_unless(in_array($file, ['diff.patch', 'tests.txt', 'review.json', 'security.json', 'result.json'], true), 404);
         $root = realpath(config('mission.artifact_root'));
         $directory = $task->artifact_path ? realpath($task->artifact_path) : false;
         abort_unless($root && $directory && str_starts_with($directory, $root.DIRECTORY_SEPARATOR), 404);

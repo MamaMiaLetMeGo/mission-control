@@ -11,7 +11,7 @@ use Illuminate\Validation\ValidationException;
 
 class ProductionPublication
 {
-    private const PR_FIELDS = 'number,url,state,isDraft,headRefName,headRefOid,baseRefName,baseRefOid,isCrossRepository,mergeable,mergeStateStatus,mergeCommit';
+    private const PR_FIELDS = 'number,url,state,isDraft,headRefName,headRefOid,baseRefName,baseRefOid,isCrossRepository,mergeable,mergeStateStatus,mergeCommit,reviewDecision';
 
     private ?Lock $operationLock = null;
 
@@ -22,7 +22,7 @@ class ProductionPublication
     /** @return array<string, mixed> */
     public function status(MissionTask $task): array
     {
-        $status = [...['state' => 'unplanned', 'plan' => null, 'pr_number' => null, 'pr_url' => null, 'head_revision' => null, 'merge_revision' => null, 'checks' => [], 'verification' => ['state' => 'not_verified'], 'deployment' => ['state' => 'not_started', 'url' => null, 'revision' => null], 'conflicts' => [], 'blockers' => [], 'error' => null, 'last_checked_at' => null], ...($task->production_publication ?? [])];
+        $status = [...['state' => 'unplanned', 'plan' => null, 'pr_number' => null, 'pr_url' => null, 'head_revision' => null, 'merge_revision' => null, 'checks' => [], 'verification' => ['state' => 'not_verified'], 'deployment' => ['state' => 'not_started', 'url' => null, 'revision' => null], 'conflicts' => [], 'blockers' => [], 'review_decision' => null, 'error' => null, 'last_checked_at' => null], ...($task->production_publication ?? [])];
         $active = MissionTask::query()->whereIn('status', ['queued', 'running'])->exists();
         $staged = $task->status === 'merged' && data_get($task->publication, 'state') === 'merged' && data_get($task->publication, 'deployment.state') === 'success' && data_get($task->publication, 'deployment.revision') === data_get($task->publication, 'merge_revision');
         if (! $staged) {
@@ -443,11 +443,12 @@ class ProductionPublication
                 if ($pull['baseRefOid'] !== $plan['main_revision'] || $pull['mergeStateStatus'] !== 'CLEAN' || $pull['mergeable'] !== 'MERGEABLE') {
                     $blockers[] = 'The production PR must match its base and satisfy all branch protections.';
                 }
+                array_push($blockers, ...$this->reviewBlockers($this->reviewDecision($pull)));
                 $failed = collect($checks)->contains(fn (array $check): bool => in_array($check['state'], ['fail', 'cancel'], true));
                 $state = $blockers === [] ? 'ready' : ($failed ? 'checks_failed' : 'checks_pending');
             }
         }
-        $this->save($task, ['state' => $state, 'checks' => $checks, 'blockers' => $blockers, 'merge_revision' => $merge, 'deployment' => $deployment, 'conflicts' => $this->conflicts($context, $plan), 'error' => null, 'last_checked_at' => now()->toISOString()]);
+        $this->save($task, ['state' => $state, 'checks' => $checks, 'blockers' => $blockers, 'review_decision' => $pull['state'] === 'OPEN' ? $this->reviewDecision($pull) : data_get($task->production_publication, 'review_decision'), 'merge_revision' => $merge, 'deployment' => $deployment, 'conflicts' => $this->conflicts($context, $plan), 'error' => null, 'last_checked_at' => now()->toISOString()]);
 
         return $this->status($task);
     }
@@ -479,5 +480,27 @@ class ProductionPublication
     private function reject(string $message): never
     {
         throw ValidationException::withMessages(['production' => $message]);
+    }
+
+    /**
+     * Normalizes GitHub's reviewDecision: only the three documented decisions are kept.
+     */
+    private function reviewDecision(array $pull): ?string
+    {
+        $decision = $pull['reviewDecision'] ?? null;
+
+        return in_array($decision, ['APPROVED', 'REVIEW_REQUIRED', 'CHANGES_REQUESTED'], true) ? $decision : null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function reviewBlockers(?string $decision): array
+    {
+        return match ($decision) {
+            'REVIEW_REQUIRED' => ['GitHub requires an approving review on this pull request.'],
+            'CHANGES_REQUESTED' => ['A GitHub reviewer requested changes on this pull request.'],
+            default => [],
+        };
     }
 }

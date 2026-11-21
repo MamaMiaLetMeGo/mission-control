@@ -1,5 +1,7 @@
 import { checkConnectivity } from './check.js';
+import { runPlanning, validatePlanInput } from './planner.js';
 import { initialResult, runMission } from './runner.js';
+import { emptyUsage } from './types.js';
 import { redact, validateInput } from './validation.js';
 
 const apiKey = process.env.OPENAI_API_KEY || '';
@@ -13,6 +15,7 @@ if (process.argv.includes('--check')) {
   write(result);
   process.exitCode = result.success ? 0 : 1;
 } else {
+  let planning = false;
   try {
     let input = '';
     process.stdin.setEncoding('utf8');
@@ -22,11 +25,18 @@ if (process.argv.includes('--check')) {
         throw new Error('The task input exceeds 1 MB.');
       }
     }
-    const result = await runMission(validateInput(JSON.parse(input)), { apiKey, signal: controller.signal, emit: write });
+    const parsed = JSON.parse(input);
+    planning = parsed?.mode === 'plan';
+    const result = planning
+      ? await runPlanning(validatePlanInput(parsed), { apiKey, signal: controller.signal, emit: write })
+      : await runMission(validateInput(parsed), { apiKey, signal: controller.signal, emit: write });
     write(result);
     process.exitCode = result.success ? 0 : 1;
   } catch (error) {
-    write({ ...initialResult(), error: redact(error instanceof Error ? error.message : String(error), apiKey) });
+    const message = redact(error instanceof Error ? error.message : String(error), apiKey);
+    write(planning
+      ? { type: 'plan', success: false, overview: '', briefs: [], usage: emptyUsage(), error: message }
+      : { ...initialResult(), error: message });
     process.exitCode = 1;
   }
 }

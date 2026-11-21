@@ -15,7 +15,7 @@ class MissionQueue
      */
     public function data(array $filters): array
     {
-        $query = MissionTask::query()->select(['id', 'title', 'lead_id', 'priority', 'status', 'created_at'])->with('lead:id,key,name')->withCount(['runs', 'decisions']);
+        $query = MissionTask::query()->select(['id', 'title', 'lead_id', 'goal_id', 'goal_position', 'signal', 'signal_reason', 'priority', 'status', 'created_at'])->with('lead:id,key,name')->withCount(['runs', 'decisions']);
         if (! empty($filters['status'])) {
             $query->where('status', $filters['status']);
         }
@@ -25,8 +25,10 @@ class MissionQueue
         if (! empty($filters['q'])) {
             $query->where('title', 'like', '%'.$filters['q'].'%');
         }
-        $tasks = $query->orderByRaw("CASE WHEN status = 'failed' THEN 0 WHEN status IN ('review', 'approved') THEN 1 WHEN status IN ('running', 'queued') THEN 2 WHEN status IN ('backlog', 'changes_requested') THEN 3 ELSE 4 END")
+        $tasks = $query->orderByRaw("CASE signal WHEN 'red' THEN 0 WHEN 'yellow' THEN 1 WHEN 'green' THEN 2 ELSE 3 END")
+            ->orderByRaw("CASE WHEN status = 'failed' THEN 0 WHEN status IN ('review', 'approved') THEN 1 WHEN status IN ('running', 'queued') THEN 2 WHEN status IN ('backlog', 'changes_requested') THEN 3 ELSE 4 END")
             ->orderByRaw("CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END")
+            ->orderByRaw('CASE WHEN goal_position IS NULL THEN 1 ELSE 0 END')->orderBy('goal_position')
             ->latest('id')->paginate(15, ['*'], 'page', (int) ($filters['page'] ?? 1))
             ->withPath(route('dashboard'))->appends(Arr::except($filters, ['page']));
         $counts = array_fill_keys(MissionTask::STATUSES, 0);

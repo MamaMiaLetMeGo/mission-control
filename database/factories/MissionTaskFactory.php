@@ -2,6 +2,7 @@
 
 namespace Database\Factories;
 
+use App\Models\Goal;
 use App\Models\Lead;
 use App\Models\MissionTask;
 use Illuminate\Database\Eloquent\Factories\Factory;
@@ -27,7 +28,12 @@ class MissionTaskFactory extends Factory
             'status' => 'review',
             'revision' => str_repeat('a', 40),
             'base_revision' => str_repeat('b', 40),
-            'review_data' => ['success' => true, 'review' => ['verdict' => 'pass'], 'tests' => ['exitCode' => 0]],
+            'review_data' => ['success' => true, 'review' => ['verdict' => 'pass'], 'tests' => ['exitCode' => 0], 'security' => ['verdict' => 'pass', 'summary' => 'No security problems found.', 'findings' => []]],
         ]);
+    }
+
+    public function forGoal(Goal $goal, int $position = 1): static
+    {
+        return $this->state(fn () => ['goal_id' => $goal->id, 'goal_position' => $position]);
     }
 }

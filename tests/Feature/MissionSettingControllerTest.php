@@ -127,9 +127,62 @@ class MissionSettingControllerTest extends TestCase
         $this->assertSame(['node', 'server.js', '{port}'], $saved['preview_command']);
     }
 
+    public function test_saves_auto_start_and_stores_false_when_the_checkbox_is_unchecked(): void
+    {
+        $this->fakeGit();
+        $this->post(route('settings.update'), [...$this->payload(), 'auto_start' => '1'])->assertRedirect(route('settings.edit'));
+        $this->assertTrue(app(MissionSettings::class)->all()['auto_start']);
+
+        $this->fakeGit();
+        $this->post(route('settings.update'), $this->payload())->assertRedirect(route('settings.edit'));
+        $this->assertFalse(app(MissionSettings::class)->all()['auto_start']);
+    }
+
+    public function test_auto_start_defaults_on(): void
+    {
+        $this->assertTrue(app(MissionSettings::class)->all()['auto_start']);
+    }
+
+    public function test_saves_review_rounds_and_defaults_to_two(): void
+    {
+        $this->assertSame(2, app(MissionSettings::class)->all()['review_rounds']);
+        $this->fakeGit();
+
+        $this->post(route('settings.update'), [...$this->payload(), 'review_rounds' => '3'])->assertRedirect(route('settings.edit'));
+
+        $this->assertSame(3, app(MissionSettings::class)->all()['review_rounds']);
+    }
+
+    #[DataProvider('invalidReviewRounds')]
+    public function test_rejects_review_rounds_outside_zero_to_three(mixed $rounds): void
+    {
+        $response = $this->post(route('settings.update'), [...$this->payload(), 'review_rounds' => $rounds]);
+
+        $response->assertSessionHasErrors('review_rounds');
+        $this->assertDatabaseCount('mission_settings', 0);
+    }
+
+    public static function invalidReviewRounds(): array
+    {
+        return ['negative' => [-1], 'too many' => [4], 'fraction' => [1.5], 'missing' => ['']];
+    }
+
+    public function test_per_run_token_allowance_accepts_up_to_one_million(): void
+    {
+        $this->post(route('settings.update'), [...$this->payload(), 'max_tokens' => '1000000'])->assertRedirect(route('settings.edit'));
+        $this->assertSame(1000000, app(MissionSettings::class)->all()['max_tokens']);
+
+        $this->post(route('settings.update'), [...$this->payload(), 'max_tokens' => '1000001'])->assertSessionHasErrors('max_tokens');
+    }
+
+    public function test_settings_page_shows_the_review_rounds_field(): void
+    {
+        $this->get(route('settings.edit'))->assertOk()->assertSee('Review fix rounds')->assertSee("How many times a sub-agent may fix the reviewer's findings before the run stops for you.", false)->assertSee('name="review_rounds"', false);
+    }
+
     private function payload(): array
     {
-        return ['repository_path' => base_path(), 'base_branch' => 'main', 'model' => '', 'test_command' => '["php","artisan","test"]', 'max_runtime_seconds' => 600, 'max_tokens' => 50000, 'daily_run_limit' => 5, 'max_parallel_runs' => 3, 'daily_token_limit' => 2000000];
+        return ['repository_path' => base_path(), 'base_branch' => 'main', 'model' => '', 'test_command' => '["php","artisan","test"]', 'max_runtime_seconds' => 600, 'max_tokens' => 50000, 'daily_run_limit' => 5, 'max_parallel_runs' => 3, 'daily_token_limit' => 2000000, 'review_rounds' => 2];
     }
 
     private function fakeGit(): void

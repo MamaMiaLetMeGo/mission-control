@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\AgentRun;
+use App\Models\Goal;
 use App\Services\TokenBudget;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Tests\TestCase;
@@ -46,5 +47,16 @@ class TokenBudgetTest extends TestCase
         config(['mission.daily_token_limit' => 10000]);
 
         $this->assertFalse(app(TokenBudget::class)->exhausted());
+    }
+
+    public function test_goal_plans_created_today_count_toward_usage(): void
+    {
+        $this->freezeTime();
+        AgentRun::factory()->create(['usage' => ['input_tokens' => 600, 'output_tokens' => 400]]);
+        Goal::factory()->create(['usage' => ['input_tokens' => 300, 'output_tokens' => 200]]);
+        Goal::factory()->create(['usage' => ['input_tokens' => 5000, 'output_tokens' => 5000], 'created_at' => now()->subDay()]);
+        Goal::factory()->create(['usage' => null]);
+
+        $this->assertSame(1500, app(TokenBudget::class)->usedToday());
     }
 }

@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\AgentRun;
+use App\Services\ChiefOfStaff;
 use App\Services\CodexProcess;
 use App\Services\MissionWorkflow;
 use App\Services\RunSlots;
@@ -86,7 +87,7 @@ class RunMissionTask implements ShouldQueue
                 }
                 $run->update($attributes);
             });
-            $successful = ($result['success'] ?? false) === true && data_get($result, 'tests.exitCode') === 0 && data_get($result, 'review.verdict') === 'pass';
+            $successful = ($result['success'] ?? false) === true && data_get($result, 'tests.exitCode') === 0 && data_get($result, 'review.verdict') === 'pass' && data_get($result, 'security.verdict') === 'pass';
             $noLongerApplies = ! $successful && ($run->settings['mode'] ?? null) === 'refresh' && ($result['error'] ?? null) === MissionWorkflow::REFRESH_CONFLICT;
             DB::transaction(function () use ($run, $result, $successful, $noLongerApplies): void {
                 $currentRun = AgentRun::query()->lockForUpdate()->find($run->id);
@@ -112,6 +113,11 @@ class RunMissionTask implements ShouldQueue
             $this->failed(new RuntimeException(mb_substr($message, 0, 4000)));
         } finally {
             $lock->release();
+        }
+        try {
+            app(ChiefOfStaff::class)->dispatch();
+        } catch (Throwable $exception) {
+            report($exception);
         }
     }
 

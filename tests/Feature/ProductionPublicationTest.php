@@ -6,10 +6,12 @@ use App\Models\AgentRun;
 use App\Models\MissionTask;
 use App\Services\GitHubProcess;
 use App\Services\GitRepository;
+use App\Services\ProductionPublication;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Str;
+use PHPUnit\Framework\Attributes\TestWith;
 use Symfony\Component\Process\Process;
 use Tests\TestCase;
 
@@ -175,6 +177,40 @@ class ProductionPublicationTest extends TestCase
 
         $this->assertSame(['create'], $this->remote['actions']);
         $this->assertTrue($this->remote['draft']);
+    }
+
+    #[TestWith(['REVIEW_REQUIRED', 'GitHub requires an approving review on this pull request.', 'Review required'])]
+    #[TestWith(['CHANGES_REQUESTED', 'A GitHub reviewer requested changes on this pull request.', 'Changes requested'])]
+    public function test_a_required_github_review_prevents_production_merge(string $decision, string $blocker, string $label): void
+    {
+        [$task, $repository] = $this->fixture();
+        $plan = $this->plan($task);
+        $this->postJson(route('tasks.production.publish', $task), $this->pin($task, $plan))->assertOk();
+        $this->postJson(route('tasks.production.verify', $task), [...$this->pin($task, $plan), 'evidence_file' => $this->receipt($repository, $plan)])->assertOk();
+        $this->remote['review'] = $decision;
+
+        $this->postJson(route('tasks.production.ready', $task), $this->pin($task, $plan))->assertOk()->assertJsonPath('productionPublication.state', 'checks_pending')->assertJsonPath('productionPublication.can_merge', false)->assertJsonPath('productionPublication.review_decision', $decision);
+        $this->postJson(route('tasks.production.merge', $task), $this->pin($task, $plan))->assertUnprocessable()->assertJsonValidationErrors('production');
+
+        $this->assertContains($blocker, $task->fresh()->production_publication['blockers']);
+        $this->assertStringContainsString('GitHub review: '.$label, view('mission.production-publication', ['task' => $task->fresh(), 'productionPublication' => app(ProductionPublication::class)->status($task->fresh())])->render());
+        $this->assertSame(['create', 'ready'], $this->remote['actions']);
+    }
+
+    #[TestWith(['APPROVED', 'APPROVED', 'Approved'])]
+    #[TestWith(['', null, 'Not required'])]
+    #[TestWith(['SOMETHING_NEW', null, 'Not required'])]
+    public function test_an_approved_or_unrequired_github_review_does_not_block_production(string $decision, ?string $stored, string $label): void
+    {
+        [$task, $repository] = $this->fixture();
+        $plan = $this->plan($task);
+        $this->postJson(route('tasks.production.publish', $task), $this->pin($task, $plan))->assertOk();
+        $this->postJson(route('tasks.production.verify', $task), [...$this->pin($task, $plan), 'evidence_file' => $this->receipt($repository, $plan)])->assertOk();
+        $this->remote['review'] = $decision;
+
+        $this->postJson(route('tasks.production.ready', $task), $this->pin($task, $plan))->assertOk()->assertJsonPath('productionPublication.state', 'ready')->assertJsonPath('productionPublication.review_decision', $stored);
+
+        $this->assertStringContainsString('GitHub review: '.$label, view('mission.production-publication', ['task' => $task->fresh(), 'productionPublication' => app(ProductionPublication::class)->status($task->fresh())])->render());
     }
 
     public function test_skipped_draft_checks_never_enable_production_merge(): void
@@ -367,7 +403,7 @@ class ProductionPublicationTest extends TestCase
     {
         $plan = $task->fresh()->production_publication['plan'];
 
-        return ['number' => 415, 'url' => 'https://github.com/example/project/pull/415', 'state' => $this->remote['merged'] ? 'MERGED' : ($this->remote['closed'] ? 'CLOSED' : 'OPEN'), 'isDraft' => $this->remote['draft'], 'headRefName' => $plan['branch'], 'headRefOid' => $plan['release_revision'], 'baseRefName' => 'main', 'baseRefOid' => $plan['main_revision'], 'isCrossRepository' => false, 'mergeable' => 'MERGEABLE', 'mergeStateStatus' => 'CLEAN', 'mergeCommit' => $this->remote['merge'] ? ['oid' => $this->remote['merge']] : null];
+        return ['number' => 415, 'url' => 'https://github.com/example/project/pull/415', 'state' => $this->remote['merged'] ? 'MERGED' : ($this->remote['closed'] ? 'CLOSED' : 'OPEN'), 'isDraft' => $this->remote['draft'], 'reviewDecision' => $this->remote['review'] ?? '', 'headRefName' => $plan['branch'], 'headRefOid' => $plan['release_revision'], 'baseRefName' => 'main', 'baseRefOid' => $plan['main_revision'], 'isCrossRepository' => false, 'mergeable' => 'MERGEABLE', 'mergeStateStatus' => 'CLEAN', 'mergeCommit' => $this->remote['merge'] ? ['oid' => $this->remote['merge']] : null];
     }
 
     private function conflict(): array

@@ -21,6 +21,22 @@
     <a class="text-link shrink-0" href="{{ route('settings.edit') }}">Finish setup @include('mission.icon', ['name' => 'arrow', 'class' => 'size-4'])</a>
 </div>
 @endif
+<section class="panel mb-6" aria-labelledby="goal-title">
+    <div class="panel-heading"><span class="flex items-center gap-2">@include('mission.icon', ['name' => 'spark', 'class' => 'size-4 text-accent'])<h2 id="goal-title">Give the Chief of Staff a goal</h2></span><span class="text-xs text-muted">One outcome. The briefs follow.</span></div>
+    <form action="{{ route('goals.store') }}" method="POST" class="p-6 space-y-4">
+        @csrf
+        <input type="hidden" name="goal_form" value="1">
+        <div class="field"><label for="goal-request" class="sr-only">Goal</label><textarea id="goal-request" name="request" rows="3" maxlength="5000" required placeholder="Describe the outcome you want. The Chief of Staff will plan it into briefs for your leads.">{{ old('goal_form') ? old('request') : '' }}</textarea>@if($errors->has('goal') || ($errors->has('request') && old('goal_form')))<p class="text-xs text-[#a55d68] mt-2" role="alert">{{ $errors->first('goal') ?: $errors->first('request') }}</p>@endif</div>
+        <div class="flex justify-end"><button class="button button-primary" type="submit">Plan this goal @include('mission.icon', ['name' => 'arrow', 'class' => 'size-4'])</button></div>
+    </form>
+    @if($goals->isNotEmpty())
+    <div class="task-list border-t border-line">
+        @foreach($goals as $goal)
+        <a href="{{ route('goals.show', $goal) }}" class="task-row"><span class="flex-1 min-w-0"><span class="task-title">{{ \Illuminate\Support\Str::limit($goal->request, 100) }}</span><span class="task-meta"><span>{{ $goal->created_at->diffForHumans() }}</span></span></span><span class="status-badge status-{{ $goal->status }}">{{ ['queued' => 'Waiting', 'planning' => 'Planning', 'planned' => 'Planned', 'failed' => 'Needs attention'][$goal->status] ?? ucfirst($goal->status) }}</span><span class="text-muted task-row-arrow">@include('mission.icon', ['name' => 'chevron', 'class' => 'size-4'])</span></a>
+        @endforeach
+    </div>
+    @endif
+</section>
 <div class="dashboard-grid">
     <section class="panel overflow-hidden" aria-labelledby="tasks-title">
         <div class="panel-heading"><div class="flex items-center gap-2"><h2 id="tasks-title">Your tasks</h2><span class="count-chip" data-queue-total>{{ array_sum($counts) }}</span></div><span class="text-xs text-muted">Urgent work first</span></div>
@@ -38,12 +54,12 @@
         <section class="small-note"><span class="text-accent">@include('mission.icon', ['name' => 'profile'])</span><div><h3>Good judgment compounds</h3><p>Your decisions and their reasons are saved with each task.</p><a href="{{ route('profile') }}" class="text-link mt-3">Open decision journal @include('mission.icon', ['name' => 'arrow', 'class' => 'size-4'])</a></div></section>
     </aside>
 </div>
-<details id="new-task" class="panel new-task-panel mt-6" @if(old('title') || $errors->has('title') || $errors->has('request') || $errors->has('acceptance_criteria')) open @endif>
+<details id="new-task" class="panel new-task-panel mt-6" @if(! old('goal_form') && (old('title') || $errors->has('title') || $errors->has('request') || $errors->has('acceptance_criteria'))) open @endif>
     <summary class="panel-heading cursor-pointer"><span class="flex items-center gap-2">@include('mission.icon', ['name' => 'plus', 'class' => 'size-4 text-accent'])<strong>Create a task</strong></span><span class="text-xs text-muted">Start with one clear outcome</span></summary>
     <form action="{{ route('tasks.store') }}" method="POST" class="p-6 space-y-5">
         @csrf
         <div class="field"><label for="task-title">Task title</label><input id="task-title" name="title" value="{{ old('title') }}" maxlength="200" required placeholder="e.g. Make lesson progress easier to understand"></div>
-        <div class="grid gap-5 md:grid-cols-2"><div class="field"><label for="task-request">What should change?</label><textarea id="task-request" name="request" rows="5" maxlength="20000" required placeholder="Describe the problem, who it affects, and the outcome you want.">{{ old('request') }}</textarea></div><div class="field"><label for="task-criteria">Acceptance criteria</label><textarea id="task-criteria" name="acceptance_criteria" rows="5" maxlength="10000" required placeholder="What must be true for this task to be done? Include examples or checks.">{{ old('acceptance_criteria') }}</textarea></div></div>
+        <div class="grid gap-5 md:grid-cols-2"><div class="field"><label for="task-request">What should change?</label><textarea id="task-request" name="request" rows="5" maxlength="20000" required placeholder="Describe the problem, who it affects, and the outcome you want.">{{ old('goal_form') ? '' : old('request') }}</textarea></div><div class="field"><label for="task-criteria">Acceptance criteria</label><textarea id="task-criteria" name="acceptance_criteria" rows="5" maxlength="10000" required placeholder="What must be true for this task to be done? Include examples or checks.">{{ old('acceptance_criteria') }}</textarea></div></div>
         <div class="grid gap-5 md:grid-cols-2"><div class="field"><label for="task-lead">Lead</label><select id="task-lead" name="lead">@foreach($leads->where('is_active', true) as $lead)<option value="{{ $lead->key }}" @selected(old('lead', 'engineering') === $lead->key)>{{ $lead->name }}</option>@endforeach</select></div><div class="field"><label for="task-priority">Priority</label><select id="task-priority" name="priority">@foreach(['low', 'normal', 'high', 'urgent'] as $priority)<option value="{{ $priority }}" @selected(old('priority', 'normal') === $priority)>{{ ucfirst($priority) }}</option>@endforeach</select></div></div>
         <div class="flex flex-wrap items-center justify-between gap-4 pt-2"><p class="text-xs text-muted">Saved to your backlog. You choose when work starts.</p><button class="button button-primary" type="submit">Add to backlog @include('mission.icon', ['name' => 'arrow', 'class' => 'size-4'])</button></div>
     </form>

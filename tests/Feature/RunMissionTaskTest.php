@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Jobs\RunMissionTask;
 use App\Models\AgentRun;
+use App\Models\Goal;
 use App\Models\MissionTask;
 use App\Services\CodexProcess;
 use App\Services\RunSlots;
@@ -27,7 +28,7 @@ class RunMissionTaskTest extends TestCase
         $this->freezeTime();
         config(['mission.openai_api_key' => 'test-key']);
         $run = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'queued']), 'task')->create();
-        $result = ['type' => 'result', 'success' => true, 'summary' => 'Improved the lesson controls.', 'revision' => str_repeat('a', 40), 'baseRevision' => str_repeat('b', 40), 'review' => ['verdict' => 'pass'], 'tests' => ['exitCode' => 0], 'usage' => ['input_tokens' => 25]];
+        $result = ['type' => 'result', 'success' => true, 'summary' => 'Improved the lesson controls.', 'revision' => str_repeat('a', 40), 'baseRevision' => str_repeat('b', 40), 'review' => ['verdict' => 'pass'], 'tests' => ['exitCode' => 0], 'security' => ['verdict' => 'pass', 'summary' => 'No security problems found.', 'findings' => []], 'usage' => ['input_tokens' => 25]];
         $worker = $this->mock(CodexProcess::class, function ($mock) use ($result): void {
             $mock->shouldReceive('run')->once()->andReturnUsing(function ($run, $callback) use ($result) {
                 $callback(['type' => 'thread', 'threadId' => 'thread-123', 'role' => 'implementation']);
@@ -57,6 +58,21 @@ class RunMissionTaskTest extends TestCase
 
         $this->assertSame('failed', $run->refresh()->status);
         $this->assertSame('failed', $run->task->status);
+    }
+
+    public function test_a_run_whose_security_check_failed_never_enters_the_review_queue(): void
+    {
+        config(['mission.openai_api_key' => 'test-key']);
+        $run = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'queued']), 'task')->create();
+        $worker = $this->mock(CodexProcess::class, function ($mock): void {
+            $mock->shouldReceive('run')->once()->andReturn(['success' => true, 'tests' => ['exitCode' => 0], 'review' => ['verdict' => 'pass'], 'security' => ['verdict' => 'fail', 'summary' => 'Injection.', 'findings' => []], 'error' => 'The security check found a problem.']);
+        });
+
+        (new RunMissionTask($run->id))->handle($worker);
+
+        $this->assertSame('failed', $run->refresh()->status);
+        $this->assertSame('failed', $run->task->status);
+        $this->assertSame('The security check found a problem.', $run->task->error);
     }
 
     public function test_a_duplicate_delivery_does_not_repeat_an_agent_run(): void
@@ -107,7 +123,7 @@ class RunMissionTaskTest extends TestCase
                 $run->update(['status' => 'failed', 'error' => 'Previously recovered']);
                 $run->task->update(['status' => 'failed']);
 
-                return ['success' => true, 'tests' => ['exitCode' => 0], 'review' => ['verdict' => 'pass']];
+                return ['success' => true, 'tests' => ['exitCode' => 0], 'review' => ['verdict' => 'pass'], 'security' => ['verdict' => 'pass', 'summary' => 'No security problems found.', 'findings' => []]];
             });
         });
 
@@ -177,7 +193,7 @@ class RunMissionTaskTest extends TestCase
         $this->assertTrue($held->get());
         $run = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'queued']), 'task')->create();
         $worker = $this->mock(CodexProcess::class, function ($mock): void {
-            $mock->shouldReceive('run')->once()->andReturn(['success' => true, 'tests' => ['exitCode' => 0], 'review' => ['verdict' => 'pass']]);
+            $mock->shouldReceive('run')->once()->andReturn(['success' => true, 'tests' => ['exitCode' => 0], 'review' => ['verdict' => 'pass'], 'security' => ['verdict' => 'pass', 'summary' => 'No security problems found.', 'findings' => []]]);
         });
         $job = (new RunMissionTask($run->id))->withFakeQueueInteractions();
 
@@ -279,6 +295,41 @@ class RunMissionTaskTest extends TestCase
         Artisan::call('mission:recover');
 
         $this->assertSame('failed', $waiting->refresh()->status);
+    }
+
+    public function test_recovery_fails_a_stale_planning_goal_and_reports_the_count(): void
+    {
+        $this->freezeTime();
+        $stale = Goal::factory()->planning()->create(['updated_at' => now()->subMinutes(30)]);
+        $fresh = Goal::factory()->planning()->create();
+        $planned = Goal::factory()->create(['updated_at' => now()->subMinutes(30)]);
+        DB::table('jobs')->insert(['queue' => 'missions', 'payload' => '{}', 'attempts' => 1, 'reserved_at' => null, 'available_at' => now()->getTimestamp(), 'created_at' => now()->getTimestamp()]);
+
+        $this->artisan('mission:recover')->expectsOutput('Marked 1 interrupted goal plan(s) as failed.')->assertExitCode(0);
+
+        $this->assertSame('failed', $stale->refresh()->status);
+        $this->assertSame('Planning was interrupted. Give the goal again.', $stale->error);
+        $this->assertNotNull($stale->finished_at);
+        $this->assertSame('planning', $fresh->refresh()->status);
+        $this->assertSame($planned->status, $planned->refresh()->status);
+    }
+
+    public function test_recovery_fails_a_stale_queued_goal_only_once_no_job_is_pending(): void
+    {
+        $this->freezeTime();
+        $goal = Goal::factory()->queued()->create(['updated_at' => now()->subMinutes(30)]);
+        DB::table('jobs')->insert(['queue' => 'missions', 'payload' => '{}', 'attempts' => 0, 'reserved_at' => null, 'available_at' => now()->getTimestamp(), 'created_at' => now()->getTimestamp()]);
+
+        Artisan::call('mission:recover');
+        $this->assertSame('queued', $goal->refresh()->status);
+
+        DB::table('jobs')->delete();
+        Queue::fake();
+        Artisan::call('mission:recover');
+
+        $this->assertSame('failed', $goal->refresh()->status);
+        $this->assertSame('Planning was interrupted. Give the goal again.', $goal->error);
+        Queue::assertNothingPushed();
     }
 
     public function test_recovery_ignores_a_cache_lock_left_by_a_busy_slot(): void

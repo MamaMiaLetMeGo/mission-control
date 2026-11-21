@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Decision;
+use App\Models\Goal;
 use App\Models\Lead;
 use App\Models\MissionTask;
 use App\Services\MissionQueue;
@@ -17,7 +18,7 @@ class DashboardController extends Controller
 {
     public function __invoke(Request $request, MissionSettings $missionSettings, RepositorySync $repository, MissionQueue $queue): View
     {
-        return view('mission.dashboard', [...$queue->data($this->filters($request)), 'leads' => Lead::query()->orderBy('position')->orderBy('id')->get(), 'settings' => $missionSettings->all(), 'readiness' => $missionSettings->readiness(), 'repositoryStatus' => $repository->status()]);
+        return view('mission.dashboard', [...$queue->data($this->filters($request)), 'leads' => Lead::query()->orderBy('position')->orderBy('id')->get(), 'settings' => $missionSettings->all(), 'readiness' => $missionSettings->readiness(), 'goals' => Goal::query()->latest('id')->limit(5)->get(), 'repositoryStatus' => $repository->status()]);
     }
 
     public function status(Request $request, MissionQueue $queue): JsonResponse

@@ -31,6 +31,9 @@ test('captures both revisions and viewport sizes, gives images to review, and ke
       await writeFile(path.join(request.workingDirectory, 'index.html'), '<!doctype html><meta name="viewport" content="width=device-width"><h1>After the change</h1>');
       return { response: 'Updated the heading.', usage: emptyUsage() };
     }
+    if (request.role === 'security') {
+      return { response: JSON.stringify({ verdict: 'pass', summary: 'No security problems found.', findings: [] }), usage: emptyUsage() };
+    }
     reviewImages = request.images;
     return { response: JSON.stringify({ verdict: 'pass', summary: 'Fixture reviewer passed.', findings: [] }), usage: emptyUsage() };
   } });
@@ -49,4 +52,59 @@ test('captures both revisions and viewport sizes, gives images to review, and ke
   assert.equal((await statusPreview({ taskId: 7, previewRoot, revision: result.revision })).id, result.preview.id);
   assert.match(await (await fetch(result.preview.url)).text(), /After the change/);
   assert.match(await readFile(path.join(source, 'index.html'), 'utf8'), /Before the change/);
+});
+
+test('a fix round replaces the rejected after screenshots and keeps only the final revision\'s preview live', { timeout: 90000 }, async (t) => {
+  const root = await mkdtemp(path.join(path.resolve('test'), '.visual-'));
+  const source = path.join(root, 'source');
+  const home = path.join(root, 'home');
+  const previewRoot = path.join(root, 'previews');
+  await mkdir(source); await mkdir(home);
+  t.after(async () => { await stopPreview({ taskId: 8, previewRoot }); await rm(root, { recursive: true, force: true }); });
+  const environment = safeEnvironment(home);
+  const page = (heading) => `<!doctype html><meta name="viewport" content="width=device-width"><h1>${heading}</h1>`;
+  await writeFile(path.join(source, 'index.html'), page('Before the change'));
+  await writeFile(path.join(source, 'server.mjs'), "import http from 'node:http'; import {readFileSync} from 'node:fs'; http.createServer((req,res)=>{res.setHeader('Content-Type','text/html');res.end(readFileSync('index.html'));}).listen(Number(process.argv[2]),'127.0.0.1');\n");
+  await git(['init', '-b', 'main'], source, environment);
+  await git(['add', '.'], source, environment);
+  await git(['-c', 'user.name=Test', '-c', 'user.email=test@localhost', 'commit', '--no-gpg-sign', '-m', 'Before'], source, environment);
+  const headings = ['A wrong heading', 'After the change'];
+  const reviewImages = [];
+  let firstRevision;
+  const result = await runMission({
+    taskId: 8, title: 'Change heading', request: 'Update the heading.', acceptanceCriteria: 'Heading is After the change.',
+    repositoryPath: source, baseBranch: 'main', testCommand: [process.execPath, '-e', 'process.exit(0)'], reviewRounds: 1,
+    maxRuntimeSeconds: 80, maxTokens: 1000, worktreeRoot: path.join(root, 'worktrees'), artifactRoot: path.join(root, 'artifacts'), previewRoot,
+    preview: { enabled: true, driver: 'command', directory: '.', command: [process.execPath, 'server.mjs', '{port}'], paths: ['/'], ttlSeconds: 60 },
+  }, { agent: async (request) => {
+    if (request.role === 'implementation') {
+      await writeFile(path.join(request.workingDirectory, 'index.html'), page(headings.shift()));
+      return { response: 'Updated the heading.', usage: emptyUsage() };
+    }
+    if (request.role === 'security') {
+      return { response: JSON.stringify({ verdict: 'pass', summary: 'No security problems found.', findings: [] }), usage: emptyUsage() };
+    }
+    reviewImages.push(request.images);
+    if (reviewImages.length === 1) {
+      firstRevision = await git(['rev-parse', 'HEAD'], request.workingDirectory, environment);
+      return { response: JSON.stringify({ verdict: 'changes_requested', summary: 'Wrong heading.', findings: ['The heading must read After the change.'] }), usage: emptyUsage() };
+    }
+    return { response: JSON.stringify({ verdict: 'pass', summary: 'Fixture reviewer passed.', findings: [] }), usage: emptyUsage() };
+  } });
+  assert.equal(result.success, true, result.error);
+  assert.equal(result.reviewRounds, 1);
+  assert.notEqual(firstRevision, result.revision);
+  assert.equal(result.browser.status, 'passed');
+  assert.equal(result.browser.revision, result.revision);
+  assert.equal(result.browser.screenshots.length, 4);
+  assert.equal(reviewImages[1].length, 4);
+  for (const screenshot of result.browser.screenshots) {
+    assert.equal(screenshot.revision, screenshot.phase === 'before' ? result.baseRevision : result.revision);
+  }
+  assert.equal(result.preview.revision, result.revision);
+  assert.equal(await statusPreview({ taskId: 8, previewRoot, revision: firstRevision }), null);
+  assert.equal((await statusPreview({ taskId: 8, previewRoot, revision: result.revision })).id, result.preview.id);
+  assert.match(await (await fetch(result.preview.url)).text(), /After the change/);
+  const browserJson = JSON.parse(await readFile(path.join(result.artifactPath, 'browser.json'), 'utf8'));
+  assert.equal(browserJson.revision, result.revision);
 });
