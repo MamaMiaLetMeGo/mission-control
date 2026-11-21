@@ -30,7 +30,7 @@ class QueueSignal
         }
 
         if (trim((string) $task->revision) === '') {
-            return ['signal' => 'yellow', 'reason' => 'No reviewed revision yet.'];
+            return ['signal' => null, 'reason' => null];
         }
 
         $data = is_array($task->review_data) ? $task->review_data : [];

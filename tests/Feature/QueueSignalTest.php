@@ -48,12 +48,14 @@ class QueueSignalTest extends TestCase
         }
     }
 
-    public function test_a_task_without_a_reviewed_revision_is_yellow(): void
+    public function test_a_task_without_a_reviewed_revision_has_no_signal(): void
     {
         foreach (['review', 'approved', 'deferred'] as $status) {
             $task = MissionTask::factory()->create(['status' => $status, 'revision' => null, 'review_data' => null]);
-            $this->assertSame(['signal' => 'yellow', 'reason' => 'No reviewed revision yet.'], $this->signal($task), $status);
-            $this->assertSame('yellow', $task->refresh()->signal);
+            $this->assertSame(['signal' => null, 'reason' => null], $this->signal($task), $status);
+            $task->refresh();
+            $this->assertNull($task->signal);
+            $this->assertNull($task->signal_reason);
         }
     }
 
