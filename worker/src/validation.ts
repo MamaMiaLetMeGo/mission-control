@@ -73,7 +73,7 @@ export function validateInput(value: unknown): MissionInput {
 /**
  * Counts Unicode code points, as Laravel's `max:` rule does, so a value the dashboard accepts is accepted here too.
  */
-function codePoints(value: string): number {
+export function codePoints(value: string): number {
   return [...value].length;
 }
 

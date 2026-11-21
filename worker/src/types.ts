@@ -1,7 +1,7 @@
 import type { PreviewConfig, PreviewHandle, Screenshot } from './preview.js';
 import type { PreviewDatabase } from './laravel-preview.js';
 
-export type Role = 'implementation' | 'review';
+export type Role = 'implementation' | 'review' | 'planning' | 'security';
 
 export interface MissionInput {
   taskId: number;

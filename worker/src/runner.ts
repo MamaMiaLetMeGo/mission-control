@@ -13,7 +13,7 @@ const require = createRequire(import.meta.url);
 const codexEntrypoint = path.join(path.dirname(require.resolve('@openai/codex/package.json')), 'bin/codex.js');
 
 const repositoryLockRetryMs = 250;
-const repositoryLockTimeoutMs = 30_000;
+export const repositoryLockTimeoutMs = 30_000;
 
 const reviewSchema = {
   type: 'object',
@@ -43,7 +43,7 @@ export interface RunOptions {
   repositoryLockTimeoutMs?: number;
 }
 
-function addUsage(total: TokenUsage, next: TokenUsage): void {
+export function addUsage(total: TokenUsage, next: TokenUsage): void {
   for (const key of Object.keys(total) as (keyof TokenUsage)[]) {
     total[key] += next[key] || 0;
   }
@@ -267,7 +267,7 @@ export async function runMission(rawInput: MissionInput, options: RunOptions = {
  * Takes the per-repository lock that serialises `git worktree add`, retrying every 250 ms.
  * A lock still held after the timeout is reported with its path and never removed, since it may belong to a live process.
  */
-async function acquireRepositoryLock(lockPath: string, timeoutMs: number, signal: AbortSignal): Promise<string> {
+export async function acquireRepositoryLock(lockPath: string, timeoutMs: number, signal: AbortSignal): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     signal.throwIfAborted();
@@ -310,7 +310,7 @@ async function replayReviewedChange(sourceRevision: string, worktreePath: string
   }
 }
 
-function enforceTokenLimit(usage: TokenUsage, limit: number): void {
+export function enforceTokenLimit(usage: TokenUsage, limit: number): void {
   if (usage.input_tokens + usage.output_tokens > limit) {
     throw new Error('The token allowance was exceeded. Usage is checked after each Codex turn, so this is a soft limit, not a billing ceiling.');
   }

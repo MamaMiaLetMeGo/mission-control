@@ -22,7 +22,7 @@ export function createCodexAgent(apiKey: string, runtimeHome: string, emit: Emit
   return async (request) => {
     const thread = codex.startThread({
       workingDirectory: request.workingDirectory,
-      sandboxMode: request.role === 'review' ? 'read-only' : 'workspace-write',
+      sandboxMode: request.role === 'implementation' ? 'workspace-write' : 'read-only',
       approvalPolicy: 'never',
       networkAccessEnabled: false,
       webSearchMode: 'disabled',
