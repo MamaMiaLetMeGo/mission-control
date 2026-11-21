@@ -87,6 +87,28 @@ class GoalControllerTest extends TestCase
         $this->get(route('dashboard'))->assertSee('queue-goal-tag', false);
     }
 
+    public function test_a_blank_title_task_submission_keeps_its_text_out_of_the_goal_form(): void
+    {
+        $response = $this->followingRedirects()->from(route('dashboard'))->post(route('tasks.store'), ['title' => '', 'request' => 'Task body text.', 'acceptance_criteria' => 'Criteria.', 'lead' => 'engineering', 'priority' => 'normal']);
+
+        $response->assertSee('<textarea id="goal-request" name="request" rows="3" maxlength="5000" required placeholder="Describe the outcome you want. The Chief of Staff will plan it into briefs for your leads."></textarea>', false)
+            ->assertSee('>Task body text.</textarea>', false);
+        $this->assertMatchesRegularExpression('/<details id="new-task"[^>]*\sopen\s*>/', $response->getContent());
+    }
+
+    public function test_a_rejected_goal_keeps_its_text_only_in_the_goal_form(): void
+    {
+        Queue::fake();
+        $this->readyEnvironment();
+        config(['mission.openai_api_key' => '']);
+
+        $response = $this->followingRedirects()->from(route('dashboard'))->post(route('goals.store'), ['request' => 'My goal text.', 'goal_form' => '1']);
+
+        $response->assertSee('>My goal text.</textarea>', false)->assertSee('Add the OpenAI API key');
+        $this->assertSame(1, substr_count($response->getContent(), 'My goal text.'));
+        $this->assertDoesNotMatchRegularExpression('/<details id="new-task"[^>]*\sopen\s*>/', $response->getContent());
+    }
+
     private function readyEnvironment(): void
     {
         config(['mission.openai_api_key' => 'test-key-not-a-real-secret', 'mission.repository_path' => base_path(), 'mission.base_branch' => 'main', 'mission.worker_path' => base_path('artisan'), 'mission.test_command' => ['php', 'artisan', 'test']]);
