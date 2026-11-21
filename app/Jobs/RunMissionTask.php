@@ -9,6 +9,7 @@ use App\Services\TokenBudget;
 use DateTime;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Queue\MaxAttemptsExceededException;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 use Throwable;
@@ -112,12 +113,20 @@ class RunMissionTask implements ShouldQueue
         }
     }
 
+    /**
+     * Fail the run, except a never-claimed run whose retry window ran out while waiting for a slot: that one is queued again.
+     */
     public function failed(?Throwable $exception): void
     {
         $message = app(CodexProcess::class)->redact($exception?->getMessage() ?? 'The worker was interrupted.');
-        DB::transaction(function () use ($message): void {
+        DB::transaction(function () use ($message, $exception): void {
             $run = AgentRun::query()->lockForUpdate()->find($this->runId);
             if (! $run || ! in_array($run->status, ['queued', 'running'], true)) {
+                return;
+            }
+            if ($exception instanceof MaxAttemptsExceededException && $run->status === 'queued') {
+                self::dispatch($run->id)->afterCommit();
+
                 return;
             }
             $run->update(['status' => 'failed', 'error' => $message, 'finished_at' => now()]);

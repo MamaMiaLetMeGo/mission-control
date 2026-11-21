@@ -8,10 +8,12 @@ use App\Models\MissionTask;
 use App\Services\CodexProcess;
 use App\Services\RunSlots;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Queue\MaxAttemptsExceededException;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use RuntimeException;
 use Tests\TestCase;
@@ -184,7 +186,9 @@ class RunMissionTaskTest extends TestCase
         $job->assertNotReleased();
         $this->assertSame('completed', $run->refresh()->status);
         $this->assertSame('review', $run->task->status);
-        $this->assertNotNull(app(RunSlots::class)->acquire(60), 'The second slot is released when the job finishes.');
+        $slot = app(RunSlots::class)->acquire(60);
+        $this->assertNotNull($slot, 'The second slot is released when the job finishes.');
+        $slot->release();
         $held->release();
     }
 
@@ -211,6 +215,32 @@ class RunMissionTaskTest extends TestCase
         $slot = app(RunSlots::class)->acquire(60);
         $this->assertNotNull($slot);
         $slot->release();
+    }
+
+    public function test_a_run_still_waiting_when_the_retry_window_ends_is_queued_again_instead_of_failed(): void
+    {
+        Queue::fake();
+        $run = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'queued']), 'task')->create();
+
+        (new RunMissionTask($run->id))->failed(new MaxAttemptsExceededException('App\\Jobs\\RunMissionTask has been attempted too many times.'));
+
+        $this->assertSame('queued', $run->refresh()->status);
+        $this->assertNull($run->error);
+        $this->assertSame('queued', $run->task->status);
+        Queue::assertPushed(RunMissionTask::class, 1);
+        Queue::assertPushed(RunMissionTask::class, fn (RunMissionTask $job): bool => $job->runId === $run->id);
+    }
+
+    public function test_a_running_run_that_exceeds_its_attempts_is_still_failed(): void
+    {
+        Queue::fake();
+        $run = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'running']), 'task')->create(['status' => 'running']);
+
+        (new RunMissionTask($run->id))->failed(new MaxAttemptsExceededException('App\\Jobs\\RunMissionTask has been attempted too many times.'));
+
+        $this->assertSame('failed', $run->refresh()->status);
+        $this->assertSame('failed', $run->task->status);
+        Queue::assertNothingPushed();
     }
 
     public function test_a_waiting_run_retries_for_six_hours_instead_of_a_fixed_number_of_attempts(): void

@@ -15,7 +15,8 @@ class RunSlots
      */
     public function acquire(int $seconds): ?Lock
     {
-        for ($slot = 1; $slot <= $this->limit(); $slot++) {
+        $limit = $this->limit();
+        for ($slot = 1; $slot <= $limit; $slot++) {
             $lock = Cache::lock('mission-execution:'.$slot, $seconds);
             if ($lock->get()) {
                 return $lock;
@@ -27,7 +28,7 @@ class RunSlots
 
     public function limit(): int
     {
-        return max(1, (int) $this->settings->all()['max_parallel_runs']);
+        return min(4, max(1, (int) $this->settings->all()['max_parallel_runs']));
     }
 
     public function busy(): int

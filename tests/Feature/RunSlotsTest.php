@@ -40,6 +40,15 @@ class RunSlotsTest extends TestCase
         $this->assertSame(1, app(RunSlots::class)->limit());
     }
 
+    public function test_the_limit_is_clamped_to_the_allowed_range(): void
+    {
+        config(['mission.max_parallel_runs' => 10]);
+        $this->assertSame(4, app(RunSlots::class)->limit());
+
+        config(['mission.max_parallel_runs' => 0]);
+        $this->assertSame(1, app(RunSlots::class)->limit());
+    }
+
     public function test_busy_counts_running_agent_runs(): void
     {
         AgentRun::factory()->count(2)->create(['status' => 'running']);

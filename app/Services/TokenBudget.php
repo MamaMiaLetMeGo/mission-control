@@ -19,7 +19,7 @@ class TokenBudget
 
     public function limit(): int
     {
-        return (int) $this->settings->all()['daily_token_limit'];
+        return min(50000000, max(10000, (int) $this->settings->all()['daily_token_limit']));
     }
 
     public function exhausted(): bool
