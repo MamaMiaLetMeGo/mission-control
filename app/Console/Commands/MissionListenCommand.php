@@ -9,7 +9,7 @@ use Symfony\Component\Process\Exception\ExceptionInterface as ProcessException;
 use Symfony\Component\Process\Process;
 
 #[Signature('mission:listen {--processes=4 : Number of queue listeners to run (1-4)}')]
-#[Description('Run several queue listeners and stop them all together')]
+#[Description('Run several queue listeners and the scheduler, and stop them all together')]
 class MissionListenCommand extends Command
 {
     private const MAX_PROCESSES = 4;
@@ -42,6 +42,24 @@ class MissionListenCommand extends Command
         ];
     }
 
+    /**
+     * @return list<string>
+     */
+    public static function schedulerCommand(): array
+    {
+        return [PHP_BINARY, 'artisan', 'schedule:work', '--no-interaction'];
+    }
+
+    /**
+     * The commands to supervise: one per queue listener, then the scheduler.
+     *
+     * @return list<list<string>>
+     */
+    public static function childCommands(int $listeners): array
+    {
+        return [...array_fill(0, $listeners, self::childCommand()), self::schedulerCommand()];
+    }
+
     public function handle(): int
     {
         $requested = $this->option('processes');
@@ -60,8 +78,9 @@ class MissionListenCommand extends Command
         $restartAt = [];
 
         try {
-            for ($slot = 0; $slot < $count; $slot++) {
-                $children[$slot] = $this->startChild();
+            $commands = self::childCommands($count);
+            foreach ($commands as $slot => $command) {
+                $children[$slot] = $this->startChild($command);
             }
 
             while (! $this->stopRequested) {
@@ -72,7 +91,7 @@ class MissionListenCommand extends Command
                     $restartAt[$slot] ??= microtime(true) + self::RESTART_PAUSE_SECONDS;
                     if (microtime(true) >= $restartAt[$slot]) {
                         unset($restartAt[$slot]);
-                        $children[$slot] = $this->startChild();
+                        $children[$slot] = $this->startChild($commands[$slot]);
                     }
                 }
                 usleep(200_000);
@@ -84,9 +103,12 @@ class MissionListenCommand extends Command
         return self::SUCCESS;
     }
 
-    private function startChild(): Process
+    /**
+     * @param  list<string>  $command
+     */
+    private function startChild(array $command): Process
     {
-        $child = new Process(self::childCommand(), base_path(), null, null, null);
+        $child = new Process($command, base_path(), null, null, null);
         $child->start(function (string $type, string $buffer): void {
             if ($type === Process::ERR) {
                 fwrite(STDERR, $buffer);

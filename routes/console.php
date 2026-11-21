@@ -2,8 +2,10 @@
 
 use App\Jobs\RunMissionTask;
 use App\Models\AgentRun;
+use App\Services\ChiefOfStaff;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schedule;
 
 Artisan::command('mission:recover {--older-than=20 : Only mark runs older than this many minutes as failed}', function (): void {
     $minutes = max(15, (int) $this->option('older-than'));
@@ -42,3 +44,9 @@ Artisan::command('mission:recover {--older-than=20 : Only mark runs older than t
     }
     $this->info('Marked '.$recovered.' interrupted runs as failed. No tasks were restarted.');
 })->purpose('Recover stale mission runs without repeating external actions');
+
+Artisan::command('mission:dispatch', function (ChiefOfStaff $chief): void {
+    $this->info('Started '.$chief->dispatch().' goal task(s).');
+})->purpose('Start goal tasks that are ready while an agent is free');
+
+Schedule::command('mission:dispatch')->everyMinute()->withoutOverlapping();

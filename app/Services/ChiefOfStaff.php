@@ -3,13 +3,16 @@
 namespace App\Services;
 
 use App\Jobs\PlanGoal;
+use App\Models\AgentRun;
 use App\Models\Goal;
 use App\Models\Lead;
 use App\Models\MissionTask;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
+use Throwable;
 
 class ChiefOfStaff
 {
@@ -47,11 +50,52 @@ class ChiefOfStaff
     }
 
     /**
-     * Start the backlog tasks of planned goals. Filled in by the auto-start task.
+     * Start the backlog tasks of planned goals while an agent is free. Returns how many were started. Refused starts
+     * (daily or token limits, readiness) leave the task in the backlog for a later pass.
      */
     public function dispatch(): int
     {
-        return 0;
+        if (! $this->settings->all()['auto_start']) {
+            return 0;
+        }
+        $lock = Cache::lock('mission-dispatch', 60);
+        if (! $lock->get()) {
+            return 0;
+        }
+        try {
+            $capacity = app(RunSlots::class)->limit()
+                - AgentRun::query()->whereIn('status', ['queued', 'running'])->count()
+                - Goal::query()->whereIn('status', ['queued', 'planning'])->count();
+            $started = 0;
+            if ($capacity < 1) {
+                return 0;
+            }
+            $workflow = app(MissionWorkflow::class);
+            $candidates = MissionTask::query()->where('status', 'backlog')->whereNotNull('goal_id')
+                ->orderByRaw("case priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end")
+                ->orderBy('goal_id')->orderBy('goal_position')->orderBy('id')->get();
+            foreach ($candidates as $task) {
+                if ($started >= $capacity) {
+                    break;
+                }
+                if ($task->waitingOn()->isNotEmpty()) {
+                    continue;
+                }
+                try {
+                    $workflow->queue($task);
+                    $started++;
+                } catch (ValidationException|LockTimeoutException) {
+                    break;
+                } catch (Throwable $exception) {
+                    report($exception);
+                    break;
+                }
+            }
+
+            return $started;
+        } finally {
+            $lock->release();
+        }
     }
 
     /**

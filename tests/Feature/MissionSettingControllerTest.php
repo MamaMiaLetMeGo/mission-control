@@ -127,6 +127,22 @@ class MissionSettingControllerTest extends TestCase
         $this->assertSame(['node', 'server.js', '{port}'], $saved['preview_command']);
     }
 
+    public function test_saves_auto_start_and_stores_false_when_the_checkbox_is_unchecked(): void
+    {
+        $this->fakeGit();
+        $this->post(route('settings.update'), [...$this->payload(), 'auto_start' => '1'])->assertRedirect(route('settings.edit'));
+        $this->assertTrue(app(MissionSettings::class)->all()['auto_start']);
+
+        $this->fakeGit();
+        $this->post(route('settings.update'), $this->payload())->assertRedirect(route('settings.edit'));
+        $this->assertFalse(app(MissionSettings::class)->all()['auto_start']);
+    }
+
+    public function test_auto_start_defaults_on(): void
+    {
+        $this->assertTrue(app(MissionSettings::class)->all()['auto_start']);
+    }
+
     private function payload(): array
     {
         return ['repository_path' => base_path(), 'base_branch' => 'main', 'model' => '', 'test_command' => '["php","artisan","test"]', 'max_runtime_seconds' => 600, 'max_tokens' => 50000, 'daily_run_limit' => 5, 'max_parallel_runs' => 3, 'daily_token_limit' => 2000000];

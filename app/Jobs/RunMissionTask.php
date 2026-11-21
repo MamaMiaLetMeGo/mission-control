@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\AgentRun;
+use App\Services\ChiefOfStaff;
 use App\Services\CodexProcess;
 use App\Services\MissionWorkflow;
 use App\Services\RunSlots;
@@ -112,6 +113,11 @@ class RunMissionTask implements ShouldQueue
             $this->failed(new RuntimeException(mb_substr($message, 0, 4000)));
         } finally {
             $lock->release();
+        }
+        try {
+            app(ChiefOfStaff::class)->dispatch();
+        } catch (Throwable $exception) {
+            report($exception);
         }
     }
 

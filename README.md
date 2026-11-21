@@ -16,7 +16,7 @@ composer run setup
 composer run start
 ```
 
-Open **http://127.0.0.1:8765**. This starts the web app and four queue listeners; keep the terminal running. For frontend development with Vite hot reload, use `composer run dev` instead.
+Open **http://127.0.0.1:8765**. This starts the web app and four queue listeners and the scheduler; keep the terminal running. For frontend development with Vite hot reload, use `composer run dev` instead.
 
 `.env.example` defaults to SQLite. For PostgreSQL, create a dedicated database and set the usual `DB_*` variables. Never point this dashboard at your project's own application database.
 

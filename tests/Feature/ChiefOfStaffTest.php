@@ -122,11 +122,6 @@ class ChiefOfStaffTest extends TestCase
         app(ChiefOfStaff::class)->createTasks(Goal::factory()->planning()->create(), ['overview' => '', 'briefs' => [$good]]);
     }
 
-    public function test_dispatch_is_a_stub_that_starts_nothing(): void
-    {
-        $this->assertSame(0, app(ChiefOfStaff::class)->dispatch());
-    }
-
     /** @return list<string> */
     private function leadKeys(): array
     {
