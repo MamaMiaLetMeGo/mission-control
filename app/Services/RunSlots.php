@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\AgentRun;
+use App\Models\BrainRun;
 use App\Models\Goal;
 use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Support\Facades\Cache;
@@ -34,6 +35,7 @@ class RunSlots
 
     public function busy(): int
     {
-        return AgentRun::query()->where('status', 'running')->count() + Goal::query()->where('status', 'planning')->count();
+        return AgentRun::query()->where('status', 'running')->count() + Goal::query()->where('status', 'planning')->count()
+            + BrainRun::query()->where('status', 'learning')->count();
     }
 }

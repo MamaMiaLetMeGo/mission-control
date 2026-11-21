@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\AgentRun;
+use App\Models\BrainRun;
 use App\Models\Goal;
 use App\Models\MissionSetting;
 use App\Services\RunSlots;
@@ -64,6 +65,16 @@ class RunSlotsTest extends TestCase
         Goal::factory()->planning()->create();
         Goal::factory()->queued()->create();
         Goal::factory()->create();
+
+        $this->assertSame(2, app(RunSlots::class)->busy());
+    }
+
+    public function test_busy_also_counts_brain_runs_that_are_learning(): void
+    {
+        AgentRun::factory()->create(['status' => 'running']);
+        BrainRun::factory()->learning()->create();
+        BrainRun::factory()->queued()->create();
+        BrainRun::factory()->create();
 
         $this->assertSame(2, app(RunSlots::class)->busy());
     }
