@@ -30,6 +30,8 @@ export interface MissionInput {
   sourceRevision?: string;
   /** The summary of the run that produced `sourceRevision`, reused as the refreshed run's summary. */
   previousSummary?: string;
+  /** How many times a sub-agent may fix the reviewer's findings before the run stops. Integer 0-3, defaults to 0; ignored in refresh mode. */
+  reviewRounds?: number;
 }
 
 export interface TokenUsage {
@@ -69,6 +71,10 @@ export interface WorkerResult {
   artifactPath: string;
   summary: string;
   review: Review;
+  /** How many fix rounds a sub-agent used on the reviewer's findings. */
+  reviewRounds: number;
+  /** Each earlier `changes_requested` review, oldest first. `review` is always the final one. */
+  reviewHistory: Review[];
   tests: { command: string[]; exitCode: number; output: string };
   usage: TokenUsage;
   browser?: {

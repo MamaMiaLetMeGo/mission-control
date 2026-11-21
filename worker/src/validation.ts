@@ -74,6 +74,10 @@ export function validateInput(value: unknown): MissionInput {
     && (typeof input.previousSummary !== 'string' || input.previousSummary.length > 20000 || input.previousSummary.includes('\0'))) {
     throw new Error('previousSummary must be a string of at most 20000 characters.');
   }
+  if (input.reviewRounds !== undefined
+    && (!Number.isSafeInteger(input.reviewRounds) || (input.reviewRounds as number) < 0 || (input.reviewRounds as number) > 3)) {
+    throw new Error('reviewRounds must be an integer from 0 to 3.');
+  }
   if (input.preview !== undefined) {
     const preview = input.preview as Record<string, unknown>;
     if (!preview || typeof preview !== 'object' || typeof preview.enabled !== 'boolean') throw new Error('preview.enabled must be a boolean.');

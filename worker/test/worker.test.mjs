@@ -477,3 +477,169 @@ test('a goal without a team adds the goal block but no coordinate phase', async 
   assert.doesNotMatch(implementation, /Team context/);
   assert.equal(events.some((event) => event.stage === 'coordinate'), false);
 });
+
+const changesRequested = (summary, findings) => ({ response: JSON.stringify({ verdict: 'changes_requested', summary, findings }), usage: emptyUsage() });
+const passed = () => ({ response: JSON.stringify({ verdict: 'pass', summary: 'The change meets the criteria.', findings: [] }), usage: emptyUsage() });
+
+/** Answers each implementation and review call in turn from the given scripts; each implementation step may edit the worktree. */
+function scriptedAgent({ implementations, reviews }, requests = []) {
+  let implementationCalls = 0;
+  let reviewCalls = 0;
+  return async (request) => {
+    requests.push(request);
+    if (request.role === 'implementation') {
+      return implementations[implementationCalls++](request.workingDirectory);
+    }
+    return reviews[reviewCalls++];
+  };
+}
+
+test('a sub-agent fixes the reviewer findings and the fixed change passes a new review', async (t) => {
+  const { input, environment } = await fixture(t);
+  const requests = [];
+  const events = [];
+  const result = await runMission({ ...input, reviewRounds: 1, lead: { name: 'Design Lead', instructions: 'Prefer existing components.' } }, {
+    emit: (event) => events.push(event),
+    agent: scriptedAgent({
+      implementations: [
+        async (directory) => { await writeFile(path.join(directory, 'feature.txt'), 'implemented\n'); return { response: 'Implemented the feature.', usage: emptyUsage() }; },
+        async (directory) => { await writeFile(path.join(directory, 'edge.txt'), 'empty input handled\n'); return { response: 'Implemented the feature and handled empty input.', usage: emptyUsage() }; },
+      ],
+      reviews: [changesRequested('Fix the edge case.', ['Empty input is not handled.', 'Add a note.']), passed()],
+    }, requests),
+  });
+  assert.equal(result.success, true, result.error);
+  assert.equal(result.reviewRounds, 1);
+  assert.deepEqual(result.reviewHistory, [{ verdict: 'changes_requested', summary: 'Fix the edge case.', findings: ['Empty input is not handled.', 'Add a note.'] }]);
+  assert.equal(result.review.verdict, 'pass');
+  assert.equal(result.summary, 'Implemented the feature and handled empty input.');
+  assert.equal(await git(['rev-list', '--count', `${result.baseRevision}..${result.revision}`], result.worktreePath, environment), '1');
+  assert.equal(await git(['rev-parse', 'HEAD'], result.worktreePath, environment), result.revision);
+  const patch = await readFile(path.join(result.artifactPath, 'diff.patch'), 'utf8');
+  assert.match(patch, /feature\.txt/);
+  assert.match(patch, /empty input handled/);
+  assert.deepEqual([...result.diff.files].sort(), ['edge.txt', 'feature.txt']);
+  assert.equal(result.diff.additions, 2);
+  assert.equal(JSON.parse(await readFile(path.join(result.artifactPath, 'review.json'), 'utf8')).verdict, 'pass');
+  assert.deepEqual(JSON.parse(await readFile(path.join(result.artifactPath, 'review-round-1.json'), 'utf8')), result.reviewHistory[0]);
+  assert.deepEqual(events.filter((event) => event.stage).map((event) => event.stage), ['code', 'test', 'review', 'chase', 'test', 'review']);
+  assert.deepEqual(events.find((event) => event.stage === 'chase'), { type: 'phase', role: 'implementation', stage: 'chase', message: 'Fixing the reviewer\'s findings (round 1 of 1).' });
+  const [first, fix] = requests.filter((request) => request.role === 'implementation').map((request) => request.prompt);
+  assert.equal(fix.split('\n\n').slice(0, 6).join('\n\n'), first.split('\n\n').slice(0, 6).join('\n\n'));
+  assert.ok(fix.includes([
+    'An independent reviewer requested changes to the work already in this worktree. Fix every finding below, and nothing else.',
+    'Reviewer summary:\nFix the edge case.',
+    'Findings:\n- Empty input is not handled.\n- Add a note.',
+    'Finish with a concise summary of the whole change as it now stands.',
+    'Lead instructions:\nPrefer existing components.',
+    'Task title: Add a feature',
+    'Request:\nCreate feature.txt.',
+    'Acceptance criteria:\nThe file contains implemented.',
+  ].join('\n\n')), fix);
+  assert.match(requests.filter((request) => request.role === 'review')[1].prompt, /handled empty input/);
+});
+
+test('a change still rejected after the last fix round fails with the full review history', async (t) => {
+  const { input } = await fixture(t);
+  let fixes = 0;
+  const edit = async (directory) => { await writeFile(path.join(directory, 'feature.txt'), `attempt ${fixes++}\n`); return { response: `Attempt ${fixes}.`, usage: emptyUsage() }; };
+  const result = await runMission({ ...input, reviewRounds: 2 }, { agent: scriptedAgent({
+    implementations: [edit, edit, edit],
+    reviews: [changesRequested('First.', ['One.']), changesRequested('Second.', ['Two.']), changesRequested('Third.', ['Three.'])],
+  }) });
+  assert.equal(result.success, false);
+  assert.equal(result.error, 'The independent reviewer requested changes.');
+  assert.equal(result.reviewRounds, 2);
+  assert.deepEqual(result.reviewHistory.map((review) => review.summary), ['First.', 'Second.']);
+  assert.equal(result.review.summary, 'Third.');
+  assert.equal(JSON.parse(await readFile(path.join(result.artifactPath, 'review.json'), 'utf8')).summary, 'Third.');
+  assert.equal(JSON.parse(await readFile(path.join(result.artifactPath, 'review-round-2.json'), 'utf8')).summary, 'Second.');
+});
+
+test('without review rounds a rejected review stops the run after one implementation', async (t) => {
+  const { input } = await fixture(t);
+  const roles = [];
+  const base = successfulAgent({ review: changesRequested('Fix it.', ['Broken.']) });
+  const result = await runMission({ ...input, reviewRounds: 0 }, { agent: async (request) => { roles.push(request.role); return base(request); } });
+  assert.equal(result.success, false);
+  assert.equal(result.error, 'The independent reviewer requested changes.');
+  assert.deepEqual(roles, ['implementation', 'review']);
+  assert.equal(result.reviewRounds, 0);
+  assert.deepEqual(result.reviewHistory, []);
+});
+
+test('a fix round that changes nothing fails with the findings unresolved', async (t) => {
+  const { input } = await fixture(t);
+  const result = await runMission({ ...input, reviewRounds: 2 }, { agent: scriptedAgent({
+    implementations: [
+      async (directory) => { await writeFile(path.join(directory, 'feature.txt'), 'implemented\n'); return { response: 'Done.', usage: emptyUsage() }; },
+      async () => ({ response: 'Nothing to change.', usage: emptyUsage() }),
+    ],
+    reviews: [changesRequested('Fix it.', ['Broken.'])],
+  }) });
+  assert.equal(result.success, false);
+  assert.equal(result.error, 'The fix round produced no changes, so the reviewer\'s findings remain.');
+  assert.equal(result.reviewRounds, 1);
+});
+
+test('a fix round that adds an environment file is not committed', async (t) => {
+  const { input, environment } = await fixture(t);
+  const result = await runMission({ ...input, reviewRounds: 1 }, { agent: scriptedAgent({
+    implementations: [
+      async (directory) => { await writeFile(path.join(directory, 'feature.txt'), 'implemented\n'); return { response: 'Done.', usage: emptyUsage() }; },
+      async (directory) => { await writeFile(path.join(directory, '.env'), 'SECRET=1\n'); return { response: 'Fixed.', usage: emptyUsage() }; },
+    ],
+    reviews: [changesRequested('Fix it.', ['Broken.'])],
+  }) });
+  assert.equal(result.success, false);
+  assert.match(result.error, /environment secret file/);
+  assert.equal(result.revision, '');
+  assert.equal(await git(['rev-list', '--count', `${result.baseRevision}..HEAD`], result.worktreePath, environment), '0');
+});
+
+test('the token allowance is enforced after a fix round', async (t) => {
+  const { input } = await fixture(t);
+  input.maxTokens = 20;
+  let reviews = 0;
+  const result = await runMission({ ...input, reviewRounds: 1 }, { agent: scriptedAgent({
+    implementations: [
+      async (directory) => { await writeFile(path.join(directory, 'feature.txt'), 'implemented\n'); return { response: 'Done.', usage: emptyUsage() }; },
+      async (directory) => { await writeFile(path.join(directory, 'feature.txt'), 'fixed\n'); return { response: 'Fixed.', usage: { ...emptyUsage(), output_tokens: 21 } }; },
+    ],
+    reviews: [changesRequested('Fix it.', ['Broken.']), passed()],
+  }, { push: (request) => { if (request.role === 'review') reviews++; } }) });
+  assert.equal(result.success, false);
+  assert.match(result.error, /soft limit/);
+  assert.equal(reviews, 1);
+});
+
+test('refresh mode never asks a sub-agent to fix review findings', async (t) => {
+  const { input, environment } = await fixture(t);
+  const original = await runMission(input, { agent: successfulAgent() });
+  assert.equal(original.success, true, original.error);
+  await commitOnBase(input, environment, 'other.txt', 'moved\n', 'Move base');
+  const roles = [];
+  const refreshed = await runMission(
+    { ...input, mode: 'refresh', reviewRounds: 2, sourceRevision: original.revision, previousSummary: original.summary },
+    { agent: async (request) => { roles.push(request.role); return successfulAgent({ review: changesRequested('Fix it.', ['Broken.']) })(request); } },
+  );
+  assert.equal(refreshed.success, false);
+  assert.deepEqual(roles, ['review']);
+  assert.equal(refreshed.reviewRounds, 0);
+  assert.deepEqual(refreshed.reviewHistory, []);
+});
+
+test('reviewRounds must be an integer from 0 to 3', async (t) => {
+  const { input } = await fixture(t);
+  for (const reviewRounds of [0, 3]) {
+    assert.doesNotThrow(() => validateInput({ ...input, reviewRounds }));
+  }
+  for (const reviewRounds of [4, -1, 1.5, '1']) {
+    assert.throws(() => validateInput({ ...input, reviewRounds }), /reviewRounds must be an integer from 0 to 3\./);
+  }
+  const result = await runMission({ ...input, reviewRounds: 4 }, { agent: successfulAgent() });
+  assert.equal(result.success, false);
+  assert.match(result.error, /reviewRounds/);
+  assert.equal(result.reviewRounds, 0);
+  assert.deepEqual(result.reviewHistory, []);
+});

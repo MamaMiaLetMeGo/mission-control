@@ -150,6 +150,15 @@ class MissionTaskControllerTest extends TestCase
         Queue::assertNothingPushed();
     }
 
+    public function test_the_task_page_says_how_many_times_reviewer_findings_were_fixed(): void
+    {
+        $fixed = MissionTask::factory()->readyForReview()->create(['review_data' => ['success' => true, 'reviewRounds' => 2, 'tests' => ['exitCode' => 0], 'review' => ['verdict' => 'pass', 'summary' => 'Good.', 'findings' => []]]]);
+        $direct = MissionTask::factory()->readyForReview()->create(['review_data' => ['success' => true, 'reviewRounds' => 0, 'tests' => ['exitCode' => 0], 'review' => ['verdict' => 'pass', 'summary' => 'Good.', 'findings' => []]]]);
+
+        $this->get(route('tasks.show', $fixed))->assertOk()->assertSee('The sub-agent fixed reviewer findings 2 time(s) before this review.');
+        $this->get(route('tasks.show', $direct))->assertOk()->assertDontSee('fixed reviewer findings');
+    }
+
     public function test_approval_requires_passing_tests_and_independent_review(): void
     {
         $task = MissionTask::factory()->readyForReview()->create(['review_data' => ['success' => true, 'tests' => ['exitCode' => 1], 'review' => ['verdict' => 'pass']]]);

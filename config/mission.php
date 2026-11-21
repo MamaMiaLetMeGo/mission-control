@@ -11,6 +11,7 @@ return [
     'daily_run_limit' => (int) env('MISSION_DAILY_RUN_LIMIT', 20),
     'max_parallel_runs' => (int) env('MISSION_MAX_PARALLEL_RUNS', 3),
     'auto_start' => (bool) env('MISSION_AUTO_START', true),
+    'review_rounds' => (int) env('MISSION_REVIEW_ROUNDS', 2),
     'daily_token_limit' => (int) env('MISSION_DAILY_TOKEN_LIMIT', 2000000),
     'preview_enabled' => (bool) env('MISSION_PREVIEW_ENABLED', false),
     'preview_driver' => env('MISSION_PREVIEW_DRIVER', 'laravel'),

@@ -39,6 +39,7 @@ class CodexProcess
             'preview' => $this->missionSettings->previewConfiguration($settings),
             'previewRoot' => config('mission.preview_root'),
             'previewDatabase' => config('mission.preview_database'),
+            'reviewRounds' => ($settings['mode'] ?? null) === 'refresh' ? 0 : (int) ($settings['review_rounds'] ?? 0),
         ];
         if ($task->lead) {
             $payload['lead'] = ['name' => $task->lead->name, 'instructions' => $task->lead->instructions];

@@ -182,12 +182,39 @@ PHP);
             $this->assertSame('refresh', $payload['mode']);
             $this->assertSame(str_repeat('a', 40), $payload['sourceRevision']);
             $this->assertSame('Improved the lesson.', $payload['previousSummary']);
+            $this->assertSame(0, $payload['reviewRounds']);
 
             app(CodexProcess::class)->run($implement, fn (array $event) => null);
             $payload = json_decode(file_get_contents($directory.'/payload.json'), true);
             $this->assertArrayNotHasKey('mode', $payload);
             $this->assertArrayNotHasKey('sourceRevision', $payload);
             $this->assertArrayNotHasKey('previousSummary', $payload);
+            $this->assertSame(0, $payload['reviewRounds']);
+        } finally {
+            File::deleteDirectory($directory);
+        }
+    }
+
+    public function test_the_runs_review_rounds_are_sent_to_the_worker_except_on_refresh(): void
+    {
+        $directory = storage_path('framework/testing/codex-process-'.Str::uuid());
+        mkdir($directory, 0700, true);
+        file_put_contents($directory.'/fixture.php', <<<'PHP'
+<?php
+file_put_contents(__DIR__.'/payload.json', stream_get_contents(STDIN));
+echo json_encode(['type' => 'result', 'success' => false, 'error' => 'stopped'])."\n";
+PHP);
+        config(['mission.node_binary' => PHP_BINARY, 'mission.worker_path' => $directory.'/fixture.php']);
+        $settings = ['repository_path' => '/fixture/repository', 'base_branch' => 'main', 'test_command' => ['php', '-v'], 'max_runtime_seconds' => 60, 'max_tokens' => 1000, 'review_rounds' => 2];
+        $implement = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'queued']), 'task')->create(['settings' => $settings]);
+        $refresh = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'queued']), 'task')->create(['settings' => [...$settings, 'mode' => 'refresh', 'source_revision' => str_repeat('a', 40)]]);
+
+        try {
+            app(CodexProcess::class)->run($implement, fn (array $event) => null);
+            $this->assertSame(2, json_decode(file_get_contents($directory.'/payload.json'), true)['reviewRounds']);
+
+            app(CodexProcess::class)->run($refresh, fn (array $event) => null);
+            $this->assertSame(0, json_decode(file_get_contents($directory.'/payload.json'), true)['reviewRounds']);
         } finally {
             File::deleteDirectory($directory);
         }
