@@ -180,9 +180,54 @@ class MissionSettingControllerTest extends TestCase
         $this->get(route('settings.edit'))->assertOk()->assertSee('Review fix rounds')->assertSee("How many times a sub-agent may fix the reviewer's findings before the run stops for you.", false)->assertSee('name="review_rounds"', false);
     }
 
+    public function test_brain_learning_defaults_on_after_five_decisions(): void
+    {
+        $settings = app(MissionSettings::class)->all();
+
+        $this->assertTrue($settings['brain_enabled']);
+        $this->assertSame(5, $settings['brain_learn_after']);
+    }
+
+    public function test_saves_brain_settings_and_stores_false_when_the_checkbox_is_unchecked(): void
+    {
+        $this->fakeGit();
+        $this->post(route('settings.update'), [...$this->payload(), 'brain_enabled' => '1', 'brain_learn_after' => '12'])->assertRedirect(route('settings.edit'));
+        $saved = app(MissionSettings::class)->all();
+        $this->assertTrue($saved['brain_enabled']);
+        $this->assertSame(12, $saved['brain_learn_after']);
+
+        $this->fakeGit();
+        $this->post(route('settings.update'), $this->payload())->assertRedirect(route('settings.edit'));
+        $this->assertFalse(app(MissionSettings::class)->all()['brain_enabled']);
+    }
+
+    #[DataProvider('invalidLearnAfter')]
+    public function test_rejects_decisions_before_learning_outside_one_to_fifty(mixed $count): void
+    {
+        $response = $this->post(route('settings.update'), [...$this->payload(), 'brain_learn_after' => $count]);
+
+        $response->assertSessionHasErrors('brain_learn_after');
+        $this->assertDatabaseCount('mission_settings', 0);
+    }
+
+    public static function invalidLearnAfter(): array
+    {
+        return ['zero' => [0], 'too many' => [51], 'fraction' => [2.5], 'missing' => ['']];
+    }
+
+    public function test_settings_page_shows_the_brain_settings(): void
+    {
+        $this->get(route('settings.edit'))->assertOk()
+            ->assertSee('Let the Brain learn from my decisions')
+            ->assertSee('After enough decisions with feedback, a read-only agent turns them into preferences you can edit on the Brain page.')
+            ->assertSee('Decisions before the Brain learns')
+            ->assertSee('name="brain_enabled"', false)
+            ->assertSee('name="brain_learn_after"', false);
+    }
+
     private function payload(): array
     {
-        return ['repository_path' => base_path(), 'base_branch' => 'main', 'model' => '', 'test_command' => '["php","artisan","test"]', 'max_runtime_seconds' => 600, 'max_tokens' => 50000, 'daily_run_limit' => 5, 'max_parallel_runs' => 3, 'daily_token_limit' => 2000000, 'review_rounds' => 2];
+        return ['repository_path' => base_path(), 'base_branch' => 'main', 'model' => '', 'test_command' => '["php","artisan","test"]', 'max_runtime_seconds' => 600, 'max_tokens' => 50000, 'daily_run_limit' => 5, 'max_parallel_runs' => 3, 'daily_token_limit' => 2000000, 'review_rounds' => 2, 'brain_learn_after' => 5];
     }
 
     private function fakeGit(): void

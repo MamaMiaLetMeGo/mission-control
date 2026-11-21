@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Jobs\RunMissionTask;
 use App\Models\AgentRun;
+use App\Models\BrainRun;
 use App\Models\Goal;
 use App\Models\MissionTask;
 use App\Services\CodexProcess;
@@ -329,6 +330,31 @@ class RunMissionTaskTest extends TestCase
 
         $this->assertSame('failed', $goal->refresh()->status);
         $this->assertSame('Planning was interrupted. Give the goal again.', $goal->error);
+        Queue::assertNothingPushed();
+    }
+
+    public function test_recovery_fails_a_stale_learning_brain_run_and_counts_it(): void
+    {
+        $this->freezeTime();
+        $stale = BrainRun::factory()->learning()->create(['updated_at' => now()->subMinutes(30)]);
+        $fresh = BrainRun::factory()->learning()->create();
+        $queued = BrainRun::factory()->queued()->create(['updated_at' => now()->subMinutes(30)]);
+        DB::table('jobs')->insert(['queue' => 'missions', 'payload' => '{}', 'attempts' => 1, 'reserved_at' => null, 'available_at' => now()->getTimestamp(), 'created_at' => now()->getTimestamp()]);
+
+        $this->artisan('mission:recover')->expectsOutput('Marked 1 interrupted runs as failed. No tasks were restarted.')->assertExitCode(0);
+
+        $this->assertSame('failed', $stale->refresh()->status);
+        $this->assertSame('Learning was interrupted. Nothing was changed.', $stale->error);
+        $this->assertNotNull($stale->finished_at);
+        $this->assertSame('learning', $fresh->refresh()->status);
+        $this->assertSame('queued', $queued->refresh()->status);
+
+        DB::table('jobs')->delete();
+        Queue::fake();
+        Artisan::call('mission:recover');
+
+        $this->assertSame('failed', $queued->refresh()->status);
+        $this->assertSame('Learning was interrupted. Nothing was changed.', $queued->error);
         Queue::assertNothingPushed();
     }
 

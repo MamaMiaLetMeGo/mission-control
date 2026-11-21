@@ -13,6 +13,8 @@ return [
     'auto_start' => (bool) env('MISSION_AUTO_START', true),
     'review_rounds' => (int) env('MISSION_REVIEW_ROUNDS', 2),
     'daily_token_limit' => (int) env('MISSION_DAILY_TOKEN_LIMIT', 2000000),
+    'brain_enabled' => (bool) env('MISSION_BRAIN_ENABLED', true),
+    'brain_learn_after' => (int) env('MISSION_BRAIN_LEARN_AFTER', 5),
     'preview_enabled' => (bool) env('MISSION_PREVIEW_ENABLED', false),
     'preview_driver' => env('MISSION_PREVIEW_DRIVER', 'laravel'),
     'preview_directory' => env('MISSION_PREVIEW_DIRECTORY', 'backend'),

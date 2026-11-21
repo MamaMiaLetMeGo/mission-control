@@ -2,15 +2,26 @@
 
 namespace App\Services;
 
+use App\Jobs\LearnPreferences;
 use App\Models\BrainRun;
 use App\Models\Decision;
 use App\Models\Lead;
 use App\Models\Preference;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
+use InvalidArgumentException;
 
 class Brain
 {
     public const MAX_DECISIONS = 50;
+
+    public const MAX_CHANGES = 10;
+
+    public const MAX_EVIDENCE = 50;
+
+    public function __construct(private MissionSettings $settings, private TokenBudget $tokens) {}
 
     /**
      * Make a preference safe to place in a prompt: one line, no control characters, at most 300 characters.
@@ -88,5 +99,200 @@ class Brain
         }
 
         return $found->take(self::MAX_DECISIONS)->values();
+    }
+
+    /**
+     * Queue a learning run when one is due. An automatic start waits for enough decisions with feedback and returns null
+     * when learning cannot start; a manual start ignores both settings and throws a ValidationException with the reason.
+     */
+    public function start(bool $manual = false): ?BrainRun
+    {
+        return Cache::lock('mission-brain', 30)->block(5, function () use ($manual): ?BrainRun {
+            if (BrainRun::query()->whereIn('status', ['queued', 'learning'])->exists()) {
+                return $this->refuse($manual, 'The Brain is already learning.');
+            }
+            $pending = $this->pendingDecisions();
+            if ($pending->isEmpty()) {
+                return $this->refuse($manual, 'There are no new decisions with feedback to learn from.');
+            }
+            $settings = $this->settings->all();
+            if (! $manual && (! $settings['brain_enabled'] || $pending->count() < (int) $settings['brain_learn_after'])) {
+                return null;
+            }
+            $readiness = $this->settings->readiness();
+            foreach (['api_key', 'worker'] as $check) {
+                if (! $readiness[$check]) {
+                    return $this->refuse($manual, MissionSettings::READINESS_MESSAGES[$check]);
+                }
+            }
+            if ($this->tokens->exhausted()) {
+                return $this->refuse($manual, 'The daily token limit of '.$this->tokens->limit().' has been reached. Raise it in Settings or wait until tomorrow.');
+            }
+
+            return DB::transaction(function () use ($pending, $settings): BrainRun {
+                $run = BrainRun::query()->create([
+                    'status' => 'queued',
+                    'settings' => $settings,
+                    'events' => [],
+                    'decision_ids' => $pending->pluck('id')->all(),
+                    'last_decision_id' => (int) $pending->max('id'),
+                ]);
+                LearnPreferences::dispatch($run->id)->afterCommit();
+
+                return $run;
+            });
+        });
+    }
+
+    /**
+     * Apply the Brain's changes: retirements, then updates, then adds up to the active cap, then complete the run.
+     * Changes to preferences that are no longer active and learned are skipped. Throws InvalidArgumentException, applying
+     * nothing, when the result breaks any limit.
+     *
+     * @param  array<string, mixed>  $result
+     */
+    public function apply(BrainRun $run, array $result): void
+    {
+        [$summary, $changes] = $this->validated($run, $result);
+        DB::transaction(function () use ($run, $summary, $changes): void {
+            $preferences = Preference::query()->lockForUpdate()->get()->keyBy('id');
+            $target = function (int $id) use ($preferences): ?Preference {
+                $preference = $preferences->get($id);
+
+                return $preference && $preference->status === 'active' && $preference->source === 'learned' ? $preference : null;
+            };
+            foreach (array_filter($changes, fn (array $change): bool => $change['op'] === 'retire') as $change) {
+                $target($change['id'])?->update(['status' => 'off', 'note' => $change['reason']]);
+            }
+            foreach (array_filter($changes, fn (array $change): bool => $change['op'] === 'update') as $change) {
+                $preference = $target($change['id']);
+                if ($preference) {
+                    $evidence = array_values(array_unique([...array_filter((array) $preference->evidence, 'is_int'), ...$change['evidence']]));
+                    $preference->update(['text' => $change['text'], 'evidence' => array_slice($evidence, -self::MAX_EVIDENCE), 'seen_at' => null]);
+                }
+            }
+            $active = $preferences->where('status', 'active');
+            $texts = $active->map(fn (Preference $preference): string => mb_strtolower($this->clean($preference->text)))->flip();
+            $count = $active->count();
+            $leads = Lead::query()->pluck('id', 'key');
+            $capped = 0;
+            foreach ($changes as $change) {
+                if ($change['op'] !== 'add' || $texts->has(mb_strtolower($change['text']))) {
+                    continue;
+                }
+                if ($count >= Preference::MAX_ACTIVE) {
+                    $capped++;
+
+                    continue;
+                }
+                Preference::query()->create([
+                    'text' => $change['text'],
+                    'lead_id' => $change['lead'] === null ? null : $leads->get($change['lead']),
+                    'status' => 'active',
+                    'source' => 'learned',
+                    'evidence' => $change['evidence'],
+                    'seen_at' => null,
+                ]);
+                $texts->put(mb_strtolower($change['text']), true);
+                $count++;
+            }
+            $run->update([
+                'status' => 'completed',
+                'summary' => $summary.($capped > 0 ? " {$capped} preference(s) were not added because ".Preference::MAX_ACTIVE.' are already active.' : ''),
+                'error' => null,
+                'finished_at' => now(),
+            ]);
+        });
+    }
+
+    /**
+     * @param  array<string, mixed>  $result
+     * @return array{0: string, 1: list<array{op: 'add', text: string, lead: ?string, evidence: list<int>}|array{op: 'update', id: int, text: string, evidence: list<int>}|array{op: 'retire', id: int, reason: string}>}
+     */
+    private function validated(BrainRun $run, array $result): array
+    {
+        $summary = $result['summary'] ?? null;
+        if (! is_string($summary) || trim($summary) === '' || mb_strlen($summary) > 2000 || str_contains($summary, "\0") || ! mb_check_encoding($summary, 'UTF-8')) {
+            $this->invalid('The summary must be 1 to 2000 characters.');
+        }
+        $changes = $result['changes'] ?? null;
+        if (! is_array($changes) || ! array_is_list($changes) || count($changes) > self::MAX_CHANGES) {
+            $this->invalid('There must be at most '.self::MAX_CHANGES.' changes.');
+        }
+        $decisionIds = array_map('intval', (array) $run->decision_ids);
+        $leadKeys = Lead::query()->pluck('key')->all();
+        $targeted = [];
+        $checked = [];
+        foreach ($changes as $index => $change) {
+            $position = $index + 1;
+            if (! is_array($change)) {
+                $this->invalid("Change {$position} is not an object.");
+            }
+            $op = $change['op'] ?? null;
+            if ($op === 'add') {
+                $lead = $change['lead'] ?? null;
+                if ($lead !== null && (! is_string($lead) || ! in_array($lead, $leadKeys, true))) {
+                    $this->invalid("Change {$position} names a lead that does not exist.");
+                }
+                $checked[] = ['op' => 'add', 'text' => $this->line($change['text'] ?? null, $position), 'lead' => $lead, 'evidence' => $this->evidence($change['evidence'] ?? null, $decisionIds, $position)];
+
+                continue;
+            }
+            if ($op !== 'update' && $op !== 'retire') {
+                $this->invalid("Change {$position} has an unknown op.");
+            }
+            $id = $change['id'] ?? null;
+            if (! is_int($id) || $id < 1 || in_array($id, $targeted, true)) {
+                $this->invalid("Change {$position} must target a preference no other change targets.");
+            }
+            $targeted[] = $id;
+            $checked[] = $op === 'update'
+                ? ['op' => 'update', 'id' => $id, 'text' => $this->line($change['text'] ?? null, $position), 'evidence' => $this->evidence($change['evidence'] ?? null, $decisionIds, $position)]
+                : ['op' => 'retire', 'id' => $id, 'reason' => $this->line($change['reason'] ?? null, $position)];
+        }
+
+        return [$summary, $checked];
+    }
+
+    private function line(mixed $value, int $position): string
+    {
+        if (! is_string($value) || trim($value) === '' || mb_strlen($value) > 300 || preg_match('/[\x00-\x1F\x7F\x{0085}\x{2028}\x{2029}]/u', $value) !== 0) {
+            $this->invalid("Change {$position} needs one line of 1 to 300 characters.");
+        }
+
+        return $this->clean($value);
+    }
+
+    /**
+     * @param  list<int>  $decisionIds
+     * @return list<int>
+     */
+    private function evidence(mixed $evidence, array $decisionIds, int $position): array
+    {
+        if (! is_array($evidence) || ! array_is_list($evidence) || count($evidence) < 1 || count($evidence) > 10
+            || count($evidence) !== count(array_unique($evidence, SORT_REGULAR))) {
+            $this->invalid("Change {$position} must cite 1 to 10 different decisions.");
+        }
+        foreach ($evidence as $id) {
+            if (! is_int($id) || ! in_array($id, $decisionIds, true)) {
+                $this->invalid("Change {$position} cites a decision the Brain was not given.");
+            }
+        }
+
+        return $evidence;
+    }
+
+    private function invalid(string $message): never
+    {
+        throw new InvalidArgumentException($message);
+    }
+
+    private function refuse(bool $manual, string $message): null
+    {
+        if ($manual) {
+            throw ValidationException::withMessages(['brain' => $message]);
+        }
+
+        return null;
     }
 }
