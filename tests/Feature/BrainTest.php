@@ -22,6 +22,16 @@ class BrainTest extends TestCase
         $this->assertSame(300, mb_strlen($brain->clean(str_repeat('é', 400))));
     }
 
+    public function test_clean_handles_next_line_delete_invalid_utf8_and_never_ends_in_a_space(): void
+    {
+        $brain = app(Brain::class);
+
+        $this->assertSame('a b c', $brain->clean("a\u{0085}b\x7Fc"));
+        $this->assertSame('', $brain->clean("\xB1\x31"));
+        $this->assertSame(299, mb_strlen($brain->clean(str_repeat('a', 299).' b')));
+        $this->assertSame(str_repeat('a', 299), $brain->clean(str_repeat('a', 299).' b'));
+    }
+
     public function test_for_prompt_returns_global_and_the_leads_own_preferences_only(): void
     {
         $lead = Lead::factory()->create();
@@ -54,6 +64,7 @@ class BrainTest extends TestCase
         Preference::factory()->create(['text' => 'Global one']);
         Preference::factory()->forLead($lead)->create(['text' => 'Design one']);
         Preference::factory()->off()->create();
+        Preference::factory()->create(['text' => "\n\t"]);
 
         $this->assertSame(
             [['text' => 'Global one', 'lead' => null], ['text' => 'Design one', 'lead' => 'brain-design']],
@@ -68,6 +79,7 @@ class BrainTest extends TestCase
         Decision::factory()->create(['action' => 'publish', 'feedback' => 'Published.']);
         Decision::factory()->create(['action' => 'approve', 'feedback' => '  ']);
         Decision::factory()->create(['action' => 'approve', 'feedback' => null]);
+        Decision::factory()->create(['action' => 'approve', 'feedback' => "\n\t "]);
 
         $pending = app(Brain::class)->pendingDecisions();
 
@@ -98,5 +110,15 @@ class BrainTest extends TestCase
 
         $this->assertCount(50, $pending);
         $this->assertSame($decisions->take(50)->pluck('id')->all(), $pending->pluck('id')->all());
+    }
+
+    public function test_whitespace_only_feedback_does_not_use_up_the_cap(): void
+    {
+        Decision::factory()->count(60)->create(['feedback' => "\n\t "]);
+        $real = Decision::factory()->count(52)->create();
+
+        $pending = app(Brain::class)->pendingDecisions();
+
+        $this->assertSame($real->take(50)->pluck('id')->all(), $pending->pluck('id')->all());
     }
 }

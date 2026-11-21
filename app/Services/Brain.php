@@ -20,7 +20,7 @@ class Brain
         $text = preg_replace('/[\x00-\x1F\x7F\x{0085}\x{2028}\x{2029}]/u', ' ', $text) ?? '';
         $text = preg_replace('/\s+/u', ' ', $text) ?? '';
 
-        return mb_substr(trim($text), 0, 300);
+        return trim(mb_substr(trim($text), 0, 300));
     }
 
     /**
@@ -56,7 +56,8 @@ class Brain
                 'text' => $this->clean($preference->text),
                 'lead' => $preference->lead?->key,
             ])
-            ->all();
+            ->filter(fn (array $preference): bool => $preference['text'] !== '')
+            ->values()->all();
     }
 
     /**
@@ -67,13 +68,25 @@ class Brain
     public function pendingDecisions(): Collection
     {
         $after = (int) BrainRun::query()->where('status', 'completed')->max('last_decision_id');
+        $found = new Collection;
+        $cursor = $after;
 
-        return Decision::query()
-            ->whereIn('action', Decision::HUMAN_ACTIONS)
-            ->whereNotNull('feedback')
-            ->whereRaw("trim(feedback) <> ''")
-            ->where('id', '>', $after)
-            ->with('task.lead')
-            ->orderBy('id')->limit(self::MAX_DECISIONS)->get();
+        while ($found->count() < self::MAX_DECISIONS) {
+            $batch = Decision::query()
+                ->whereIn('action', Decision::HUMAN_ACTIONS)
+                ->whereNotNull('feedback')
+                ->where('id', '>', $cursor)
+                ->with('task.lead')
+                ->orderBy('id')->limit(self::MAX_DECISIONS)->get();
+
+            if ($batch->isEmpty()) {
+                break;
+            }
+
+            $cursor = (int) $batch->last()->id;
+            $found = $found->concat($batch->filter(fn (Decision $decision): bool => trim((string) $decision->feedback) !== ''));
+        }
+
+        return $found->take(self::MAX_DECISIONS)->values();
     }
 }
