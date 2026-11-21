@@ -7,7 +7,7 @@ use Illuminate\Support\Facades\DB;
 
 class MissionSettings
 {
-    public const KEYS = ['repository_path', 'base_branch', 'model', 'test_command', 'max_runtime_seconds', 'max_tokens', 'daily_run_limit', 'preview_enabled', 'preview_driver', 'preview_directory', 'preview_command', 'preview_paths', 'preview_ttl_seconds'];
+    public const KEYS = ['repository_path', 'base_branch', 'model', 'test_command', 'max_runtime_seconds', 'max_tokens', 'daily_run_limit', 'max_parallel_runs', 'daily_token_limit', 'preview_enabled', 'preview_driver', 'preview_directory', 'preview_command', 'preview_paths', 'preview_ttl_seconds'];
 
     public const PREVIEW_KEYS = ['preview_enabled', 'preview_driver', 'preview_directory', 'preview_command', 'preview_paths', 'preview_ttl_seconds'];
 

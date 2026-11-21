@@ -37,8 +37,16 @@ class CodexProcess
             'previewRoot' => config('mission.preview_root'),
             'previewDatabase' => config('mission.preview_database'),
         ];
+        if ($task->lead) {
+            $payload['lead'] = ['name' => $task->lead->name, 'instructions' => $task->lead->instructions];
+        }
         if (! empty($settings['model'])) {
             $payload['model'] = $settings['model'];
+        }
+        if (($settings['mode'] ?? null) === 'refresh') {
+            $payload['mode'] = 'refresh';
+            $payload['sourceRevision'] = $settings['source_revision'] ?? null;
+            $payload['previousSummary'] = $settings['previous_summary'] ?? '';
         }
         $process = new Process([config('mission.node_binary'), config('mission.worker_path')], base_path(), ['OPENAI_API_KEY' => config('mission.openai_api_key')]);
         $process->setInput(json_encode($payload, JSON_THROW_ON_ERROR));

@@ -3,7 +3,6 @@
 @section('content')
 @php
     $statusLabels = ['backlog' => 'Backlog', 'queued' => 'Queued', 'running' => 'In progress', 'review' => 'Needs review', 'approved' => 'Approved', 'merged' => 'Merged locally', 'changes_requested' => 'Changes requested', 'deferred' => 'Deferred', 'rejected' => 'Rejected', 'failed' => 'Needs attention'];
-    $areaLabels = ['engineering' => 'Engineering', 'content' => 'Learning & audio', 'quality' => 'Quality', 'growth' => 'Growth'];
     $reviewCount = $counts['review'] ?? 0;
     $activeCount = $counts['running'] ?? 0;
 @endphp
@@ -27,9 +26,9 @@
         <div class="panel-heading"><div class="flex items-center gap-2"><h2 id="tasks-title">Your tasks</h2><span class="count-chip" data-queue-total>{{ array_sum($counts) }}</span></div><span class="text-xs text-muted">Urgent work first</span></div>
         <form class="filter-bar" action="{{ route('dashboard') }}" method="GET" aria-label="Filter tasks">
             <div class="filter-field"><label for="status-filter" class="sr-only">Task status</label><select id="status-filter" name="status"><option value="">All statuses</option>@foreach($statusLabels as $value => $label)<option value="{{ $value }}" @selected(request('status') === $value)>{{ $label }}</option>@endforeach</select></div>
-            <div class="filter-field"><label for="area-filter" class="sr-only">Focus area</label><select id="area-filter" name="area"><option value="">All focus areas</option>@foreach($areaLabels as $value => $label)<option value="{{ $value }}" @selected(request('area') === $value)>{{ $label }}</option>@endforeach</select></div>
+            <div class="filter-field"><label for="lead-filter" class="sr-only">Lead</label><select id="lead-filter" name="lead"><option value="">All leads</option>@foreach($leads as $lead)<option value="{{ $lead->key }}" @selected(request('lead') === $lead->key)>{{ $lead->name }}</option>@endforeach</select></div>
             <button type="submit" class="button button-small button-quiet">Filter</button>
-            @if(request()->filled('status') || request()->filled('area'))<a href="{{ route('dashboard') }}" class="text-xs text-muted underline underline-offset-4">Clear</a>@endif
+            @if(request()->filled('status') || request()->filled('lead'))<a href="{{ route('dashboard') }}" class="text-xs text-muted underline underline-offset-4">Clear</a>@endif
         </form>
         <div data-queue-list>@include('mission.queue-list')</div>
         <div class="panel-footnote">@include('mission.icon', ['name' => 'shield', 'class' => 'size-4'])Your approval is tied to the exact code you review.</div>
@@ -45,7 +44,7 @@
         @csrf
         <div class="field"><label for="task-title">Task title</label><input id="task-title" name="title" value="{{ old('title') }}" maxlength="200" required placeholder="e.g. Make lesson progress easier to understand"></div>
         <div class="grid gap-5 md:grid-cols-2"><div class="field"><label for="task-request">What should change?</label><textarea id="task-request" name="request" rows="5" maxlength="20000" required placeholder="Describe the problem, who it affects, and the outcome you want.">{{ old('request') }}</textarea></div><div class="field"><label for="task-criteria">Acceptance criteria</label><textarea id="task-criteria" name="acceptance_criteria" rows="5" maxlength="10000" required placeholder="What must be true for this task to be done? Include examples or checks.">{{ old('acceptance_criteria') }}</textarea></div></div>
-        <div class="grid gap-5 md:grid-cols-2"><div class="field"><label for="task-area">Focus area</label><select id="task-area" name="area">@foreach($areaLabels as $value => $label)<option value="{{ $value }}" @selected(old('area', 'engineering') === $value)>{{ $label }}</option>@endforeach</select></div><div class="field"><label for="task-priority">Priority</label><select id="task-priority" name="priority">@foreach(['low', 'normal', 'high', 'urgent'] as $priority)<option value="{{ $priority }}" @selected(old('priority', 'normal') === $priority)>{{ ucfirst($priority) }}</option>@endforeach</select></div></div>
+        <div class="grid gap-5 md:grid-cols-2"><div class="field"><label for="task-lead">Lead</label><select id="task-lead" name="lead">@foreach($leads->where('is_active', true) as $lead)<option value="{{ $lead->key }}" @selected(old('lead', 'engineering') === $lead->key)>{{ $lead->name }}</option>@endforeach</select></div><div class="field"><label for="task-priority">Priority</label><select id="task-priority" name="priority">@foreach(['low', 'normal', 'high', 'urgent'] as $priority)<option value="{{ $priority }}" @selected(old('priority', 'normal') === $priority)>{{ ucfirst($priority) }}</option>@endforeach</select></div></div>
         <div class="flex flex-wrap items-center justify-between gap-4 pt-2"><p class="text-xs text-muted">Saved to your backlog. You choose when work starts.</p><button class="button button-primary" type="submit">Add to backlog @include('mission.icon', ['name' => 'arrow', 'class' => 'size-4'])</button></div>
     </form>
 </details>

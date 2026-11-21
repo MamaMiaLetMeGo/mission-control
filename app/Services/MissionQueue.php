@@ -8,16 +8,19 @@ use Illuminate\Support\Arr;
 
 class MissionQueue
 {
+    public function __construct(private RunSlots $slots, private TokenBudget $tokens) {}
+
     /** @param array<string, mixed> $filters
-     * @return array{tasks: LengthAwarePaginator, counts: array<string, int>}
+     * @return array{tasks: LengthAwarePaginator, counts: array<string, int>, capacity: array{busy: int, slots: int, tokensUsed: int, tokenLimit: int}}
      */
     public function data(array $filters): array
     {
-        $query = MissionTask::query()->select(['id', 'title', 'area', 'priority', 'status', 'created_at'])->withCount(['runs', 'decisions']);
-        foreach (['status', 'area'] as $filter) {
-            if (! empty($filters[$filter])) {
-                $query->where($filter, $filters[$filter]);
-            }
+        $query = MissionTask::query()->select(['id', 'title', 'lead_id', 'priority', 'status', 'created_at'])->with('lead:id,key,name')->withCount(['runs', 'decisions']);
+        if (! empty($filters['status'])) {
+            $query->where('status', $filters['status']);
+        }
+        if (! empty($filters['lead'])) {
+            $query->whereHas('lead', fn ($lead) => $lead->where('key', $filters['lead']));
         }
         if (! empty($filters['q'])) {
             $query->where('title', 'like', '%'.$filters['q'].'%');
@@ -31,6 +34,8 @@ class MissionQueue
             $counts[$row->status] = (int) $row->aggregate;
         }
 
-        return compact('tasks', 'counts');
+        $capacity = ['busy' => $this->slots->busy(), 'slots' => $this->slots->limit(), 'tokensUsed' => $this->tokens->usedToday(), 'tokenLimit' => $this->tokens->limit()];
+
+        return compact('tasks', 'counts', 'capacity');
     }
 }

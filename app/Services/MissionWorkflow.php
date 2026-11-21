@@ -8,10 +8,31 @@ use App\Models\MissionTask;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class MissionWorkflow
 {
-    public function __construct(private MissionSettings $settings, private GitRepository $git, private MissionPreview $previews, private BrowserEvidence $evidence) {}
+    private const RECHECKING = 'The base moved, so this change is being re-checked against it. Review the refreshed revision when it is ready.';
+
+    public const REFRESH_TOKEN_LIMIT = 'The base moved and the daily token limit is reached. Refresh this task tomorrow or raise the limit.';
+
+    /**
+     * The worker's error when the reviewed change no longer applies to the moved base. The task then needs a new run.
+     */
+    public const REFRESH_CONFLICT = 'This change no longer applies to the current base. Run the task again.';
+
+    public const REFRESH_START_FAILED = 'The base moved, but the re-check could not start. Refresh this task to try again.';
+
+    /**
+     * Errors left on a reviewed task whose refresh did not start, so refreshing it by hand is the next step.
+     */
+    public const RETRYABLE_REFRESH_ERRORS = [self::REFRESH_TOKEN_LIMIT, self::REFRESH_START_FAILED];
+
+    private const DIFFERENT_TARGET = 'This task was reviewed against a different repository or base branch. Restore those Settings before refreshing it.';
+
+    private const REFRESHABLE = ['review', 'approved', 'deferred'];
+
+    public function __construct(private MissionSettings $settings, private GitRepository $git, private MissionPreview $previews, private BrowserEvidence $evidence, private TokenBudget $tokens) {}
 
     public function queue(MissionTask $task): void
     {
@@ -24,29 +45,170 @@ class MissionWorkflow
             if (! $readiness['ready']) {
                 $this->reject(implode(' ', $readiness['issues']));
             }
-            if (MissionTask::query()->whereIn('status', ['queued', 'running'])->exists()) {
-                $this->reject('One task is already active. Wait for it to finish before starting another.');
-            }
             $settings = $this->settings->all();
-            if (AgentRun::query()->where('created_at', '>=', now()->startOfDay())->count() >= $settings['daily_run_limit']) {
+            if ($this->runsCountedToday() >= $settings['daily_run_limit']) {
                 $this->reject('The daily run limit has been reached. Increase it in Settings or wait until tomorrow.');
             }
-            $repository = realpath($settings['repository_path']);
-            $repositoryRoot = $this->git->command($repository, ['rev-parse', '--show-toplevel']);
-            if (realpath($repositoryRoot) !== $repository) {
-                $this->reject('Choose the Git repository root in Settings.');
+            if ($this->tokens->exhausted()) {
+                $this->reject('The daily token limit of '.$this->tokens->limit().' has been reached. Raise it in Settings or wait until tomorrow.');
             }
-            $settings['repository_path'] = $repository;
-            $settings['previous_review'] = $task->review_data;
-            $this->git->command($repository, ['rev-parse', '--verify', 'refs/heads/'.$settings['base_branch']]);
-            $settings['remote_snapshot'] = $this->git->remoteSnapshot($repository, $settings['base_branch']);
-            $this->previews->stop($task);
-            DB::transaction(function () use ($task, $settings): void {
-                $task->update(['status' => 'queued', 'error' => null, 'recommendation' => null, 'review_data' => null, 'revision' => null, 'base_revision' => null, 'branch' => null, 'worktree_path' => null, 'artifact_path' => null]);
-                $run = $task->runs()->create(['role' => 'engineering', 'status' => 'queued', 'settings' => $settings, 'events' => []]);
-                RunMissionTask::dispatch($run->id)->afterCommit();
-            });
+            $this->startRun($task, $settings);
         });
+    }
+
+    /**
+     * Replay the reviewed revision onto the current base and test and review it again. The task gets a new revision that
+     * needs a new approval. Returns false, leaving the task where it is with an explanation, when the token limit is reached.
+     */
+    public function refresh(MissionTask $task): bool
+    {
+        return Cache::lock('mission-workflow', 120)->block(5, fn (): bool => $this->refreshWhileLocked($task));
+    }
+
+    /**
+     * The body of refresh(), for callers that already hold the `mission-workflow` lock.
+     */
+    private function refreshWhileLocked(MissionTask $task): bool
+    {
+        $task->refresh();
+        $source = $this->refreshSource($task);
+        if (! $source) {
+            $this->reject('Only reviewed or approved tasks with a revision can be refreshed.');
+        }
+        $settings = $this->settings->all();
+        if (! $this->sameTarget($task->runs()->first()?->settings, $settings)) {
+            $this->reject(self::DIFFERENT_TARGET);
+        }
+        if ($this->tokens->exhausted()) {
+            $task->update(['error' => self::REFRESH_TOKEN_LIMIT]);
+
+            return false;
+        }
+        $readiness = $this->settings->readiness();
+        if (! $readiness['ready']) {
+            $this->reject(implode(' ', $readiness['issues']));
+        }
+        $this->startRun($task, [...$settings, 'mode' => 'refresh', ...$source]);
+
+        return true;
+    }
+
+    /**
+     * What a refresh of this task replays: its reviewed revision, or, for a task whose refresh run failed, the revision
+     * that refresh run was replaying. Null when the task has nothing reviewed to replay.
+     *
+     * @return array{source_revision: string, previous_summary: string}|null
+     */
+    private function refreshSource(MissionTask $task): ?array
+    {
+        if (in_array($task->status, self::REFRESHABLE, true) && $this->isRevision($task->revision)) {
+            return ['source_revision' => $task->revision, 'previous_summary' => $this->previousSummary($task->recommendation ?: $task->title)];
+        }
+        if (self::isFailedRefresh($task)) {
+            $settings = $task->runs()->first()->settings;
+            $summary = $settings['previous_summary'] ?? null;
+
+            return ['source_revision' => $settings['source_revision'], 'previous_summary' => $this->previousSummary(is_string($summary) && $summary !== '' ? $summary : $task->title)];
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether the task failed during a refresh run that still names the reviewed revision it was replaying.
+     */
+    public static function isFailedRefresh(MissionTask $task): bool
+    {
+        if ($task->status !== 'failed') {
+            return false;
+        }
+        $settings = $task->runs()->first()?->settings ?? [];
+
+        return ($settings['mode'] ?? null) === 'refresh' && is_string($settings['source_revision'] ?? null) && preg_match('/^[a-f0-9]{40,64}$/', $settings['source_revision']) === 1;
+    }
+
+    /**
+     * Whether the run settings a task was reviewed with name the same repository and base branch as the given settings.
+     * Missing or unreadable settings never match.
+     *
+     * @param  array<string, mixed>|null  $reviewed
+     * @param  array<string, mixed>  $current
+     */
+    private function sameTarget(?array $reviewed, array $current): bool
+    {
+        if (! is_string($reviewed['repository_path'] ?? null) || ! is_string($current['repository_path'] ?? null) || ! is_string($reviewed['base_branch'] ?? null)) {
+            return false;
+        }
+        $repository = realpath($reviewed['repository_path']);
+
+        return $repository !== false && $repository === realpath($current['repository_path']) && $reviewed['base_branch'] === ($current['base_branch'] ?? null);
+    }
+
+    private function isRevision(mixed $revision): bool
+    {
+        return is_string($revision) && preg_match('/^[a-f0-9]{40,64}$/', $revision) === 1;
+    }
+
+    /**
+     * Reset the task to `queued` and dispatch a run with the given settings plus the repository snapshot.
+     *
+     * @param  array<string, mixed>  $settings
+     */
+    private function startRun(MissionTask $task, array $settings): void
+    {
+        $repository = realpath($settings['repository_path']);
+        $repositoryRoot = $this->git->command($repository, ['rev-parse', '--show-toplevel']);
+        if (realpath($repositoryRoot) !== $repository) {
+            $this->reject('Choose the Git repository root in Settings.');
+        }
+        $settings['repository_path'] = $repository;
+        $settings['previous_review'] = $task->review_data;
+        $this->git->command($repository, ['rev-parse', '--verify', 'refs/heads/'.$settings['base_branch']]);
+        $settings['remote_snapshot'] = $this->git->remoteSnapshot($repository, $settings['base_branch']);
+        $this->previews->stop($task);
+        DB::transaction(function () use ($task, $settings): void {
+            $task->update(['status' => 'queued', 'error' => null, 'recommendation' => null, 'review_data' => null, 'revision' => null, 'base_revision' => null, 'branch' => null, 'worktree_path' => null, 'artifact_path' => null]);
+            $run = $task->runs()->create(['role' => $task->lead?->key ?? 'engineering', 'status' => 'queued', 'settings' => $settings, 'events' => []]);
+            RunMissionTask::dispatch($run->id)->afterCommit();
+        });
+    }
+
+    /**
+     * Runs created today that count against `daily_run_limit`. Refresh runs do not.
+     */
+    private function runsCountedToday(): int
+    {
+        return AgentRun::query()->where('created_at', '>=', now()->startOfDay())
+            ->where(fn ($query) => $query->whereNull('settings->mode')->orWhere('settings->mode', '!=', 'refresh'))
+            ->count();
+    }
+
+    /**
+     * The worker accepts at most 20000 UTF-16 code units without NUL bytes.
+     */
+    private function previousSummary(string $summary): string
+    {
+        $summary = mb_substr(str_replace("\0", '', $summary), 0, 20000);
+        while (strlen(mb_convert_encoding($summary, 'UTF-16LE', 'UTF-8')) > 40000) {
+            $summary = mb_substr($summary, 0, -1);
+        }
+
+        return $summary;
+    }
+
+    /**
+     * When the local base moved under a reviewed task, start a refresh and refuse with an explanation. Returns without
+     * doing anything when the refusal had another cause, such as tampering that already invalidated the task.
+     *
+     * @param  array<string, mixed>  $settings
+     */
+    private function refreshWhenBaseMoved(MissionTask $task, array $settings, bool $allowAlreadyMerged): void
+    {
+        $task->refresh();
+        if (! in_array($task->status, self::REFRESHABLE, true) || ! $this->git->baseMoved($task, $settings, $allowAlreadyMerged)) {
+            return;
+        }
+        $this->reject($this->refreshWhileLocked($task) ? self::RECHECKING : self::REFRESH_TOKEN_LIMIT);
     }
 
     public function decide(MissionTask $task, string $action, ?string $feedback, ?string $revision): void
@@ -69,7 +231,12 @@ class MissionWorkflow
                 if (! $run) {
                     $this->reject('The original run settings are missing.');
                 }
-                $this->git->assertBaseRevision($task, $run->settings);
+                try {
+                    $this->git->assertBaseRevision($task, $run->settings, invalidateWhenMoved: false);
+                } catch (ValidationException $exception) {
+                    $this->refreshWhenBaseMoved($task, $run->settings, false);
+                    throw $exception;
+                }
             }
             if ($action === 'request_changes' && ! in_array($task->status, ['review', 'approved', 'failed'], true)) {
                 $this->reject('Request changes after a run has produced review evidence.');
@@ -92,9 +259,6 @@ class MissionWorkflow
             if ($task->status !== 'approved' || $task->revision !== $revision) {
                 $this->reject('Only the currently approved revision can be merged.');
             }
-            if (MissionTask::query()->whereIn('status', ['queued', 'running'])->exists()) {
-                $this->reject('Wait for the active task to finish before merging.');
-            }
             $run = $task->runs()->first();
             if (! $run) {
                 $this->reject('The original run settings are missing.');
@@ -105,12 +269,50 @@ class MissionWorkflow
             if (function_exists('set_time_limit')) {
                 set_time_limit(150);
             }
-            $checkout = $this->git->merge($task, $run->settings, $destination);
+            try {
+                $checkout = $this->git->merge($task, $run->settings, $destination, invalidateWhenBaseMoved: false);
+            } catch (ValidationException $exception) {
+                $this->refreshWhenBaseMoved($task, $run->settings, true);
+                throw $exception;
+            }
             DB::transaction(function () use ($task, $checkout): void {
                 $task->decisions()->create(['action' => 'merge', 'revision' => $task->revision, 'feedback' => 'Merged locally by explicit approval. Checkout: '.$checkout]);
                 $task->update(['status' => 'merged']);
             });
+            $this->refreshOthersAfterMerge($task, $checkout, $run->settings);
         });
+    }
+
+    /**
+     * Refresh every other reviewed or approved task that was reviewed against an older base of the same repository and
+     * base branch. A refresh that cannot start for any reason leaves its task where it is with a short reason, and a base
+     * that cannot be read is reported, so a recorded merge never ends in an exception.
+     *
+     * @param  array<string, mixed>  $mergedSettings
+     */
+    private function refreshOthersAfterMerge(MissionTask $merged, string $checkout, array $mergedSettings): void
+    {
+        try {
+            $baseHead = $this->git->command($checkout, ['rev-parse', '--verify', 'refs/heads/'.$mergedSettings['base_branch']]);
+        } catch (Throwable $exception) {
+            report($exception);
+
+            return;
+        }
+        $stale = MissionTask::query()->whereKeyNot($merged->id)->whereIn('status', ['review', 'approved'])->whereNotNull('revision')
+            ->where(fn ($query) => $query->whereNull('base_revision')->orWhere('base_revision', '!=', $baseHead))
+            ->with('runs')->orderBy('id')->get()
+            ->filter(fn (MissionTask $task): bool => $this->sameTarget($task->runs->first()?->settings, $mergedSettings));
+        foreach ($stale as $task) {
+            try {
+                $this->refreshWhileLocked($task);
+            } catch (ValidationException $exception) {
+                $task->update(['error' => collect($exception->errors())->flatten()->first()]);
+            } catch (Throwable $exception) {
+                report($exception);
+                $task->update(['error' => self::REFRESH_START_FAILED]);
+            }
+        }
     }
 
     private function reject(string $message): never

@@ -37,6 +37,28 @@ export function validateInput(value: unknown): MissionInput {
   if (input.model !== undefined && (typeof input.model !== 'string' || input.model.includes('\0'))) {
     throw new Error('model must be a string.');
   }
+  if (input.lead !== undefined) {
+    const lead = input.lead as Record<string, unknown>;
+    if (!lead || typeof lead !== 'object' || Array.isArray(lead)
+      || typeof lead.name !== 'string' || !lead.name.trim() || codePoints(lead.name) > 100 || lead.name.includes('\0')
+      || typeof lead.instructions !== 'string' || !lead.instructions.trim() || codePoints(lead.instructions) > 4000 || lead.instructions.includes('\0')) {
+      throw new Error('lead must have a name (max 100 characters) and instructions (max 4000 characters).');
+    }
+  }
+  if (input.mode !== undefined && input.mode !== 'implement' && input.mode !== 'refresh') {
+    throw new Error('mode must be "implement" or "refresh".');
+  }
+  if (input.mode === 'refresh') {
+    if (typeof input.sourceRevision !== 'string' || !/^[0-9a-f]{40,64}$/.test(input.sourceRevision)) {
+      throw new Error('sourceRevision must be a full 40-64 character hexadecimal commit hash in refresh mode.');
+    }
+  } else if (input.sourceRevision !== undefined) {
+    throw new Error('sourceRevision is only allowed in refresh mode.');
+  }
+  if (input.previousSummary !== undefined
+    && (typeof input.previousSummary !== 'string' || input.previousSummary.length > 20000 || input.previousSummary.includes('\0'))) {
+    throw new Error('previousSummary must be a string of at most 20000 characters.');
+  }
   if (input.preview !== undefined) {
     const preview = input.preview as Record<string, unknown>;
     if (!preview || typeof preview !== 'object' || typeof preview.enabled !== 'boolean') throw new Error('preview.enabled must be a boolean.');
@@ -46,6 +68,13 @@ export function validateInput(value: unknown): MissionInput {
     if (preview.enabled) validatePreviewConfig(input.preview as PreviewConfig);
   }
   return input as unknown as MissionInput;
+}
+
+/**
+ * Counts Unicode code points, as Laravel's `max:` rule does, so a value the dashboard accepts is accepted here too.
+ */
+function codePoints(value: string): number {
+  return [...value].length;
 }
 
 export function validateReview(value: unknown): Review {

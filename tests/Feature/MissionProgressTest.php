@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\AgentRun;
+use App\Models\Lead;
 use App\Models\MissionTask;
 use App\Services\CodexProcess;
 use App\Services\GitHubProcess;
@@ -133,28 +134,43 @@ class MissionProgressTest extends TestCase
     public function test_queue_poll_preserves_filters_pagination_and_global_counts_without_external_work(): void
     {
         $this->forbidExternalWork();
+        $operations = Lead::query()->where('key', 'operations')->firstOrFail();
+        $engineering = Lead::query()->where('key', 'engineering')->firstOrFail();
         foreach (range(1, 16) as $index) {
-            MissionTask::factory()->create(['title' => sprintf('Target %02d', $index), 'status' => 'review', 'area' => 'quality']);
+            MissionTask::factory()->create(['title' => sprintf('Target %02d', $index), 'status' => 'review', 'lead_id' => $operations->id]);
         }
-        MissionTask::factory()->create(['title' => 'Target wrong area', 'status' => 'review', 'area' => 'engineering']);
-        MissionTask::factory()->create(['title' => 'Target failed', 'status' => 'failed', 'area' => 'quality']);
+        MissionTask::factory()->create(['title' => 'Target wrong lead', 'status' => 'review', 'lead_id' => $engineering->id]);
+        MissionTask::factory()->create(['title' => 'Target failed', 'status' => 'failed', 'lead_id' => $operations->id]);
         MissionTask::factory()->create(['title' => 'Other backlog']);
-        $response = $this->getJson(route('queue.status', ['q' => 'Target', 'status' => 'review', 'area' => 'quality', 'page' => 2]));
+        $response = $this->getJson(route('queue.status', ['q' => 'Target', 'status' => 'review', 'lead' => 'operations', 'page' => 2]));
 
         $response->assertOk()->assertJsonPath('counts.review', 17)->assertJsonPath('counts.failed', 1)->assertJsonPath('counts.backlog', 1)->assertJsonPath('active', true)->assertJsonPath('poll_after_ms', 15000)->assertJsonMissingPath('settings');
         $html = $response->json('html.queue');
         $this->assertStringContainsString('Target 01', $html);
         $this->assertStringNotContainsString('Target 02', $html);
-        $this->assertStringNotContainsString('Target wrong area', $html);
+        $this->assertStringNotContainsString('Target wrong lead', $html);
         $this->assertStringNotContainsString('Target failed', $html);
         $this->assertStringContainsString('status=review', $html);
-        $this->assertStringContainsString('area=quality', $html);
+        $this->assertStringContainsString('lead=operations', $html);
         $this->assertStringContainsString('q=Target', $html);
         $this->assertStringContainsString('page=1', $html);
         $this->assertStringNotContainsString('/queue/status?', $html);
         $this->assertDatabaseCount('mission_tasks', 19);
         $this->assertDatabaseCount('agent_runs', 0);
         Queue::assertNothingPushed();
+    }
+
+    public function test_queue_stats_show_busy_agents_and_tokens_used_today(): void
+    {
+        $this->forbidExternalWork();
+        config(['mission.max_parallel_runs' => 2, 'mission.daily_token_limit' => 2000000]);
+        AgentRun::factory()->create(['status' => 'running', 'usage' => ['input_tokens' => 1000, 'output_tokens' => 500]]);
+        AgentRun::factory()->create(['status' => 'queued']);
+
+        $html = $this->getJson(route('queue.status'))->assertOk()->json('html.stats');
+
+        $this->assertStringContainsString('1 of 2<span class="stat-caption">agents busy</span>', $html);
+        $this->assertStringContainsString('1,500 / 2,000,000 tokens today', $html);
     }
 
     public function test_empty_selected_page_retains_navigation_when_filter_results_shrink(): void
@@ -191,7 +207,7 @@ class MissionProgressTest extends TestCase
     {
         $this->forbidExternalWork();
 
-        $this->getJson(route('queue.status', ['status' => 'unexpected', 'area' => 'other', 'q' => str_repeat('x', 201), 'page' => 0]))->assertUnprocessable()->assertJsonValidationErrors(['status', 'area', 'q', 'page']);
+        $this->getJson(route('queue.status', ['status' => 'unexpected', 'lead' => 'other', 'q' => str_repeat('x', 201), 'page' => 0]))->assertUnprocessable()->assertJsonValidationErrors(['status', 'lead', 'q', 'page']);
         $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.1'])->getJson(route('queue.status'))->assertForbidden();
         Queue::assertNothingPushed();
     }

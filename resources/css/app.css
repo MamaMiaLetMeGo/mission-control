@@ -67,7 +67,7 @@
     .text-link { @apply inline-flex items-center gap-1.5 text-xs font-medium text-accent hover:text-[#533c97]; }
     .icon-button { @apply inline-flex size-9 items-center justify-center rounded-md text-muted hover:bg-canvas; }
     .mobile-nav-button { display: none; }
-    .stats-grid { @apply mb-6 grid grid-cols-2 gap-4 xl:grid-cols-4; }
+    .stats-grid { @apply mb-6 grid grid-cols-2 gap-4 xl:grid-cols-5; }
     .stat-card { @apply rounded-xl border border-line bg-white px-5 py-5 transition-colors hover:border-[#cfc8df]; }
     .stat-featured { @apply border-[#e3dbee] bg-[#f4f0fa]; }
     .stat-label { @apply flex items-center justify-between gap-2 text-[11px] font-medium text-muted; }

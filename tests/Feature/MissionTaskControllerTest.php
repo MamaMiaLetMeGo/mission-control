@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Jobs\RunMissionTask;
 use App\Models\AgentRun;
 use App\Models\Decision;
+use App\Models\Lead;
 use App\Models\MissionTask;
 use App\Services\GitRepository;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
@@ -18,7 +19,7 @@ class MissionTaskControllerTest extends TestCase
     public function test_creates_a_backlog_task_without_accepting_a_client_status(): void
     {
         Queue::fake();
-        $payload = MissionTask::factory()->raw(['title' => 'Improve lesson controls', 'status' => 'approved']);
+        $payload = MissionTask::factory()->raw(['title' => 'Improve lesson controls', 'status' => 'approved']) + ['lead' => 'engineering'];
 
         $response = $this->post(route('tasks.store'), $payload);
 
@@ -29,11 +30,23 @@ class MissionTaskControllerTest extends TestCase
         Queue::assertNothingPushed();
     }
 
+    public function test_a_task_is_created_for_the_chosen_lead(): void
+    {
+        $this->post(route('tasks.store'), ['title' => 'T', 'request' => 'R', 'acceptance_criteria' => 'A', 'lead' => 'design', 'priority' => 'normal'])->assertRedirect();
+        $this->assertSame('design', MissionTask::query()->sole()->lead->key);
+    }
+
+    public function test_a_deactivated_lead_cannot_receive_new_tasks(): void
+    {
+        Lead::query()->where('key', 'design')->update(['is_active' => false]);
+        $this->post(route('tasks.store'), ['title' => 'T', 'request' => 'R', 'acceptance_criteria' => 'A', 'lead' => 'design', 'priority' => 'normal'])->assertSessionHasErrors('lead');
+    }
+
     public function test_requires_a_request_and_acceptance_criteria(): void
     {
         $response = $this->post(route('tasks.store'), []);
 
-        $response->assertSessionHasErrors(['title', 'request', 'acceptance_criteria', 'area', 'priority']);
+        $response->assertSessionHasErrors(['title', 'request', 'acceptance_criteria', 'lead', 'priority']);
         $this->assertDatabaseCount('mission_tasks', 0);
     }
 
@@ -58,6 +71,21 @@ class MissionTaskControllerTest extends TestCase
         Queue::assertPushed(RunMissionTask::class, fn (RunMissionTask $job): bool => $job->runId === $run->id);
     }
 
+    public function test_the_run_is_recorded_under_the_tasks_lead(): void
+    {
+        Queue::fake([RunMissionTask::class]);
+        $this->readyEnvironment();
+        $this->mock(GitRepository::class, function ($mock): void {
+            $mock->shouldReceive('command')->andReturn(base_path(), str_repeat('a', 40));
+            $mock->shouldReceive('remoteSnapshot')->andReturn(['ref' => 'refs/remotes/origin/main', 'revision' => str_repeat('a', 40)]);
+        });
+        $task = MissionTask::factory()->for(Lead::query()->where('key', 'design')->firstOrFail())->create();
+
+        $this->post(route('tasks.run', $task))->assertRedirect(route('tasks.show', $task));
+
+        $this->assertSame('design', $task->runs()->sole()->role);
+    }
+
     public function test_missing_credentials_do_not_queue_a_task(): void
     {
         Queue::fake();
@@ -73,16 +101,35 @@ class MissionTaskControllerTest extends TestCase
         Queue::assertNothingPushed();
     }
 
-    public function test_an_active_task_blocks_another_run(): void
+    public function test_a_second_task_can_start_while_another_is_running(): void
     {
-        Queue::fake();
+        Queue::fake([RunMissionTask::class]);
         $this->readyEnvironment();
-        MissionTask::factory()->create(['status' => 'running']);
+        $this->fakeRepository();
+        $active = MissionTask::factory()->create(['status' => 'running']);
         $task = MissionTask::factory()->create();
 
         $response = $this->post(route('tasks.run', $task));
 
-        $response->assertSessionHasErrors(['task' => 'One task is already active. Wait for it to finish before starting another.']);
+        $response->assertRedirect(route('tasks.show', $task));
+        $response->assertSessionHasNoErrors();
+        $this->assertSame('running', $active->refresh()->status);
+        $this->assertSame('queued', $task->refresh()->status);
+        Queue::assertPushed(RunMissionTask::class, 1);
+    }
+
+    public function test_an_exhausted_daily_token_limit_blocks_another_run(): void
+    {
+        Queue::fake();
+        $this->freezeTime();
+        $this->readyEnvironment();
+        config(['mission.daily_token_limit' => 10000]);
+        AgentRun::factory()->create(['status' => 'completed', 'usage' => ['input_tokens' => 8000, 'output_tokens' => 2000]]);
+        $task = MissionTask::factory()->create();
+
+        $response = $this->post(route('tasks.run', $task));
+
+        $response->assertSessionHasErrors(['task' => 'The daily token limit of 10000 has been reached. Raise it in Settings or wait until tomorrow.']);
         $this->assertSame('backlog', $task->refresh()->status);
         Queue::assertNothingPushed();
     }
@@ -161,6 +208,14 @@ class MissionTaskControllerTest extends TestCase
     public function test_a_missing_task_returns_404(): void
     {
         $this->get('/tasks/99999')->assertNotFound();
+    }
+
+    private function fakeRepository(): void
+    {
+        $this->mock(GitRepository::class, function ($mock): void {
+            $mock->shouldReceive('command')->andReturn(base_path(), str_repeat('a', 40));
+            $mock->shouldReceive('remoteSnapshot')->andReturn(['ref' => 'refs/remotes/origin/main', 'revision' => str_repeat('a', 40)]);
+        });
     }
 
     private function readyEnvironment(): void

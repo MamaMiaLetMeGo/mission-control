@@ -8,6 +8,8 @@
     $canRequestChanges = in_array($task->status, ['review', 'approved', 'failed']);
     $latestRun = $task->runs->first();
     $runSettings = $latestRun?->settings ?? [];
+    $isRefreshing = in_array($task->status, ['queued', 'running'], true) && ($runSettings['mode'] ?? null) === 'refresh';
+    $canRetryRefresh = (in_array($task->status, ['review', 'approved', 'deferred'], true) && $task->revision && in_array($task->error, \App\Services\MissionWorkflow::RETRYABLE_REFRESH_ERRORS, true)) || \App\Services\MissionWorkflow::isFailedRefresh($task);
     $browser = $review['browser'] ?? [];
     $captureRequested = (bool) ($runSettings['preview_enabled'] ?? false);
     $captures = collect($browser['screenshots'] ?? [])->filter(fn ($capture) => is_array($capture) && isset($capture['file'], $capture['path'], $capture['phase'], $capture['viewport']) && in_array($capture['phase'], ['before', 'after'], true) && in_array($capture['viewport'], ['desktop', 'mobile'], true));
@@ -33,7 +35,7 @@
 <div data-task-content data-run-id="{{ $latestRun?->id ?? '' }}" data-task-status="{{ $task->status }}" data-revision="{{ $task->revision ?? '' }}">
 <a href="{{ route('dashboard') }}" class="text-link text-muted mb-7">@include('mission.icon', ['name' => 'back', 'class' => 'size-4'])Back to queue</a>
 <div class="page-heading items-start" data-task-live="heading">
-    <div class="min-w-0"><div class="flex flex-wrap items-center gap-3 mb-3"><p class="eyebrow mb-0">MC-{{ str_pad((string) $task->id, 3, '0', STR_PAD_LEFT) }}</p><span class="status-badge status-{{ $task->status }}">{{ $statusLabels[$task->status] ?? ucfirst($task->status) }}</span></div><h1 class="task-page-title">{{ $task->title }}</h1><p class="page-description">{{ ucfirst($task->area) }} <span class="px-1 text-line">/</span> {{ ucfirst($task->priority) }} priority <span class="px-1 text-line">/</span> Added {{ $task->created_at->diffForHumans() }}</p></div>
+    <div class="min-w-0"><div class="flex flex-wrap items-center gap-3 mb-3"><p class="eyebrow mb-0">MC-{{ str_pad((string) $task->id, 3, '0', STR_PAD_LEFT) }}</p><span class="status-badge status-{{ $task->status }}">{{ $statusLabels[$task->status] ?? ucfirst($task->status) }}</span></div><h1 class="task-page-title">{{ $task->title }}</h1><p class="page-description">{{ $task->lead?->name ?? 'Unassigned' }} <span class="px-1 text-line">/</span> {{ ucfirst($task->priority) }} priority <span class="px-1 text-line">/</span> Added {{ $task->created_at->diffForHumans() }}</p></div>
     @if(in_array($task->status, ['queued', 'running']))<a href="{{ route('tasks.show', $task) }}" class="button button-secondary shrink-0">@include('mission.icon', ['name' => 'refresh', 'class' => 'size-4'])Refresh status</a>@endif
 </div>
 <div data-task-live="phase">
@@ -41,7 +43,7 @@
     @php
         $latestPhase = collect($latestRun?->events ?? [])->last(fn ($event) => ($event['type'] ?? null) === 'phase');
     @endphp
-    <div class="notice mb-6"><span class="shrink-0">@include('mission.icon', ['name' => 'clock', 'class' => 'size-4'])</span><p>{{ $latestPhase['message'] ?? ($task->status === 'queued' ? 'Waiting for the local worker to start.' : 'Your team is working on this task.') }}</p></div>
+    <div class="notice mb-6"><span class="shrink-0">@include('mission.icon', ['name' => 'clock', 'class' => 'size-4'])</span><div>@if($isRefreshing)<strong class="block mb-1">Re-checking against the updated base</strong>@endif<p>{{ $latestPhase['message'] ?? ($task->status === 'queued' ? 'Waiting for the local worker to start.' : 'Your team is working on this task.') }}</p></div></div>
 @endif
 </div>
 @if($task->error)<div class="notice notice-error mb-6" role="alert"><span class="shrink-0">@include('mission.icon', ['name' => 'alert'])</span><div><strong class="block mb-1">This task needs attention</strong><p class="whitespace-pre-wrap break-words">{{ $task->error }}</p></div></div>@endif
@@ -162,6 +164,10 @@ No run events recorded.
             @elseif($task->status === 'rejected')
                 <strong class="text-sm">Task closed</strong><p class="text-sm text-muted leading-relaxed">Your decision and feedback are preserved in the journal.</p>
             @endif
+            @if($canRetryRefresh)
+                <form method="POST" action="{{ route('tasks.refresh', $task) }}">@csrf<button type="submit" class="button button-secondary w-full" @disabled(! ($readiness['ready'] ?? false))>@include('mission.icon', ['name' => 'refresh', 'class' => 'size-4'])Refresh against current base</button></form>
+                <p class="text-xs text-muted leading-relaxed">Replays this revision onto the current base and tests and reviews it again. The refreshed revision needs a new approval.</p>
+            @endif
             @if($canApprove)
                 <div><p class="eyebrow">Decision needed</p><h3 class="text-lg font-semibold tracking-tight">Ready to approve?</h3><p class="text-sm text-muted leading-relaxed mt-2">Review the evidence and approve this revision for a local merge.</p></div>
                 <form method="POST" action="{{ route('tasks.decide', $task) }}">@csrf<input type="hidden" name="action" value="approve"><input type="hidden" name="revision" value="{{ $task->revision }}"><button type="submit" class="button button-primary w-full">@include('mission.icon', ['name' => 'check', 'class' => 'size-4'])Approve for merge</button></form>
@@ -199,7 +205,7 @@ No run events recorded.
                 @endif
             </div>
         </section>
-        <section class="panel"><div class="panel-heading"><h2>Task details</h2></div><dl class="detail-list"><div><dt>Accountable lead</dt><dd>Engineering</dd></div><div><dt>Focus area</dt><dd>{{ ucfirst($task->area) }}</dd></div><div><dt>Priority</dt><dd>{{ ucfirst($task->priority) }}</dd></div><div><dt>Created</dt><dd>{{ $task->created_at->format('M j, Y') }}</dd></div>@if($task->branch)<div class="flex-col items-start"><dt>Task branch</dt><dd class="break-all text-xs font-mono mt-1">{{ $task->branch }}</dd></div>@endif</dl></section>
+        <section class="panel"><div class="panel-heading"><h2>Task details</h2></div><dl class="detail-list"><div><dt>Accountable lead</dt><dd>{{ $task->lead?->name ?? 'Unassigned' }}</dd></div><div><dt>Priority</dt><dd>{{ ucfirst($task->priority) }}</dd></div><div><dt>Created</dt><dd>{{ $task->created_at->format('M j, Y') }}</dd></div>@if($task->branch)<div class="flex-col items-start"><dt>Task branch</dt><dd class="break-all text-xs font-mono mt-1">{{ $task->branch }}</dd></div>@endif</dl></section>
     </aside>
 </div>
 </div>

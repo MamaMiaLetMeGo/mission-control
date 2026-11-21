@@ -4,9 +4,13 @@ namespace App\Jobs;
 
 use App\Models\AgentRun;
 use App\Services\CodexProcess;
+use App\Services\MissionWorkflow;
+use App\Services\RunSlots;
+use App\Services\TokenBudget;
+use DateTime;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
-use Illuminate\Support\Facades\Cache;
+use Illuminate\Queue\MaxAttemptsExceededException;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 use Throwable;
@@ -15,15 +19,28 @@ class RunMissionTask implements ShouldQueue
 {
     use Queueable;
 
-    public int $tries = 1;
+    /**
+     * Unlimited attempts: a run waiting for a free slot is released back to the queue until retryUntil().
+     */
+    public int $tries = 0;
+
+    public int $maxExceptions = 1;
 
     public int $timeout = 810;
 
     public bool $failOnTimeout = true;
 
+    public int $dispatchedAt;
+
     public function __construct(public int $runId)
     {
         $this->onQueue('missions');
+        $this->dispatchedAt = now()->getTimestamp();
+    }
+
+    public function retryUntil(): DateTime
+    {
+        return now()->setTimestamp($this->dispatchedAt)->addHours(6);
     }
 
     public function handle(CodexProcess $worker): void
@@ -32,8 +49,10 @@ class RunMissionTask implements ShouldQueue
         if (! $run || $run->status !== 'queued' || $run->task->status !== 'queued') {
             return;
         }
-        $lock = Cache::lock('mission-execution', $this->timeout + 30);
-        if (! $lock->get()) {
+        $lock = app(RunSlots::class)->acquire($this->timeout + 30);
+        if (! $lock) {
+            $this->release(15);
+
             return;
         }
         try {
@@ -47,6 +66,9 @@ class RunMissionTask implements ShouldQueue
             });
             if (! $claimed) {
                 return;
+            }
+            if (app(TokenBudget::class)->exhausted()) {
+                throw new RuntimeException('The daily token limit was reached before this run could start. Start it again tomorrow or raise the limit in Settings.');
             }
             if (! config('mission.openai_api_key')) {
                 throw new RuntimeException('The queue worker has no API key. Restart it after configuring the key.');
@@ -65,7 +87,8 @@ class RunMissionTask implements ShouldQueue
                 $run->update($attributes);
             });
             $successful = ($result['success'] ?? false) === true && data_get($result, 'tests.exitCode') === 0 && data_get($result, 'review.verdict') === 'pass';
-            DB::transaction(function () use ($run, $result, $successful): void {
+            $noLongerApplies = ! $successful && ($run->settings['mode'] ?? null) === 'refresh' && ($result['error'] ?? null) === MissionWorkflow::REFRESH_CONFLICT;
+            DB::transaction(function () use ($run, $result, $successful, $noLongerApplies): void {
                 $currentRun = AgentRun::query()->lockForUpdate()->find($run->id);
                 $task = $run->task()->lockForUpdate()->first();
                 if (! $currentRun || $currentRun->status !== 'running' || $task->status !== 'running' || $task->runs()->value('id') !== $run->id) {
@@ -73,7 +96,7 @@ class RunMissionTask implements ShouldQueue
                 }
                 $run->update(['result' => $result, 'status' => $successful ? 'completed' : 'failed', 'usage' => $result['usage'] ?? $run->usage, 'finished_at' => now(), 'error' => $successful ? null : ($result['error'] ?? 'Verification did not pass. Review the evidence before retrying.')]);
                 $run->task->update([
-                    'status' => $successful ? 'review' : 'failed',
+                    'status' => $successful ? 'review' : ($noLongerApplies ? 'changes_requested' : 'failed'),
                     'recommendation' => $result['summary'] ?? null,
                     'review_data' => $result,
                     'branch' => $result['branch'] ?? null,
@@ -92,12 +115,20 @@ class RunMissionTask implements ShouldQueue
         }
     }
 
+    /**
+     * Fail the run, except a never-claimed run whose retry window ran out while waiting for a slot: that one is queued again.
+     */
     public function failed(?Throwable $exception): void
     {
         $message = app(CodexProcess::class)->redact($exception?->getMessage() ?? 'The worker was interrupted.');
-        DB::transaction(function () use ($message): void {
+        DB::transaction(function () use ($message, $exception): void {
             $run = AgentRun::query()->lockForUpdate()->find($this->runId);
             if (! $run || ! in_array($run->status, ['queued', 'running'], true)) {
+                return;
+            }
+            if ($exception instanceof MaxAttemptsExceededException && $run->status === 'queued') {
+                self::dispatch($run->id)->afterCommit();
+
                 return;
             }
             $run->update(['status' => 'failed', 'error' => $message, 'finished_at' => now()]);

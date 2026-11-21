@@ -2,6 +2,7 @@
 
 namespace Database\Factories;
 
+use App\Models\Lead;
 use App\Models\MissionTask;
 use Illuminate\Database\Eloquent\Factories\Factory;
 
@@ -14,7 +15,7 @@ class MissionTaskFactory extends Factory
             'title' => fake()->sentence(5),
             'request' => fake()->paragraph(),
             'acceptance_criteria' => 'The requested behavior works and the relevant tests pass.',
-            'area' => 'engineering',
+            'lead_id' => Lead::factory(),
             'priority' => 'normal',
             'status' => 'backlog',
         ];

@@ -129,7 +129,7 @@ class MissionSettingControllerTest extends TestCase
 
     private function payload(): array
     {
-        return ['repository_path' => base_path(), 'base_branch' => 'main', 'model' => '', 'test_command' => '["php","artisan","test"]', 'max_runtime_seconds' => 600, 'max_tokens' => 50000, 'daily_run_limit' => 5];
+        return ['repository_path' => base_path(), 'base_branch' => 'main', 'model' => '', 'test_command' => '["php","artisan","test"]', 'max_runtime_seconds' => 600, 'max_tokens' => 50000, 'daily_run_limit' => 5, 'max_parallel_runs' => 3, 'daily_token_limit' => 2000000];
     }
 
     private function fakeGit(): void

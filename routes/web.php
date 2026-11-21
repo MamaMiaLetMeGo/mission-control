@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DesktopHealthController;
+use App\Http\Controllers\LeadController;
 use App\Http\Controllers\MissionPreviewController;
 use App\Http\Controllers\MissionSettingController;
 use App\Http\Controllers\MissionTaskController;
@@ -28,6 +29,7 @@ Route::post('/tasks/{task}/preview', [MissionPreviewController::class, 'store'])
 Route::post('/tasks/{task}/preview/stop', [MissionPreviewController::class, 'destroy'])->name('tasks.preview.stop');
 Route::get('/tasks/{task}/preview/status', [MissionPreviewController::class, 'status'])->name('tasks.preview.status');
 Route::post('/tasks/{task}/run', [MissionTaskController::class, 'run'])->name('tasks.run');
+Route::post('/tasks/{task}/refresh', [MissionTaskController::class, 'refresh'])->name('tasks.refresh');
 Route::post('/tasks/{task}/decisions', [MissionTaskController::class, 'decide'])->name('tasks.decide');
 Route::post('/tasks/{task}/merge', [MissionTaskController::class, 'merge'])->name('tasks.merge');
 Route::post('/tasks/{task}/publication', [StagingPublicationController::class, 'publish'])->name('tasks.publish');
@@ -44,6 +46,8 @@ Route::post('/tasks/{task}/production/close-conflict', [ProductionPublicationCon
 Route::get('/tasks/{task}/production/diff', [ProductionPublicationController::class, 'diff'])->name('tasks.production.diff');
 Route::get('/settings', [MissionSettingController::class, 'edit'])->name('settings.edit');
 Route::post('/settings', [MissionSettingController::class, 'update'])->name('settings.update');
+Route::post('/leads', [LeadController::class, 'store'])->name('leads.store');
+Route::post('/leads/{lead}', [LeadController::class, 'update'])->name('leads.update');
 Route::get('/repository/status', [RepositorySyncController::class, 'status'])->name('repository.status');
 Route::post('/repository/check', [RepositorySyncController::class, 'check'])->name('repository.check');
 Route::post('/repository/sync', [RepositorySyncController::class, 'sync'])->name('repository.sync');

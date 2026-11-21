@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { createCodexAgent } from './agents.js';
@@ -10,6 +11,9 @@ import { startPreview, capturePreview, stopPreview, type PreviewRequest } from '
 
 const require = createRequire(import.meta.url);
 const codexEntrypoint = path.join(path.dirname(require.resolve('@openai/codex/package.json')), 'bin/codex.js');
+
+const repositoryLockRetryMs = 250;
+const repositoryLockTimeoutMs = 30_000;
 
 const reviewSchema = {
   type: 'object',
@@ -35,6 +39,8 @@ export interface RunOptions {
   emit?: Emit;
   agent?: AgentRunner;
   signal?: AbortSignal;
+  /** How long to wait for another run to finish creating its worktree. Defaults to 30 seconds. */
+  repositoryLockTimeoutMs?: number;
 }
 
 function addUsage(total: TokenUsage, next: TokenUsage): void {
@@ -47,8 +53,8 @@ export async function runMission(rawInput: MissionInput, options: RunOptions = {
   const result = initialResult(Array.isArray(rawInput?.testCommand) ? rawInput.testCommand : []);
   const secret = options.apiKey || '';
   const emit: Emit = (event) => options.emit?.(JSON.parse(redact(JSON.stringify(event), secret)));
-  let lockPath: string | undefined;
-  let ownedLock = false;
+  let taskLockPath: string | undefined;
+  let repositoryLockPath: string | undefined;
   let previewTask: { taskId: number; previewRoot: string } | undefined;
   try {
     const input = validateInput(rawInput);
@@ -77,14 +83,14 @@ export async function runMission(rawInput: MissionInput, options: RunOptions = {
     const commonDirectory = await realpath(path.resolve(repositoryPath, await git(['rev-parse', '--git-common-dir'], repositoryPath, environment, signal)));
     const lockRoot = path.join(worktreeRoot, '.locks');
     await mkdir(lockRoot, { recursive: true, mode: 0o700 });
-    lockPath = path.join(lockRoot, createHash('sha256').update(commonDirectory).digest('hex'));
+    const candidateTaskLock = path.join(lockRoot, `task-${input.taskId}`);
     try {
-      await mkdir(lockPath, { mode: 0o700 });
-      ownedLock = true;
-      await writeFile(path.join(lockPath, 'owner.json'), JSON.stringify({ taskId: input.taskId, pid: process.pid, startedAt: new Date().toISOString(), repositoryPath }), { mode: 0o600 });
+      await mkdir(candidateTaskLock, { mode: 0o700 });
+      taskLockPath = candidateTaskLock;
+      await writeFile(path.join(taskLockPath, 'owner.json'), JSON.stringify({ taskId: input.taskId, pid: process.pid, startedAt: new Date().toISOString(), repositoryPath }), { mode: 0o600 });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-        throw new Error('This repository has an active worker lock. If a previous process crashed, recover the task before removing its lock.');
+        throw new Error('This task has an active worker lock. If a previous process crashed, recover the task before removing its lock.');
       }
       throw error;
     }
@@ -94,8 +100,25 @@ export async function runMission(rawInput: MissionInput, options: RunOptions = {
     result.artifactPath = path.join(artifactRoot, attempt);
     await mkdir(result.artifactPath, { mode: 0o700 });
     result.baseRevision = await git(['rev-parse', '--verify', '--end-of-options', `refs/heads/${input.baseBranch}^{commit}`], repositoryPath, environment, signal);
+    if (input.mode === 'refresh') {
+      try {
+        await git(['cat-file', '-e', '--end-of-options', `${input.sourceRevision}^{commit}`], repositoryPath, environment, signal);
+      } catch {
+        signal.throwIfAborted();
+        throw new Error('sourceRevision is not a commit in this repository.');
+      }
+    }
     emit({ type: 'phase', message: 'Creating an isolated worktree from the committed base revision.' });
-    await git(['worktree', 'add', '-b', result.branch, result.worktreePath, result.baseRevision], repositoryPath, environment, signal);
+    repositoryLockPath = await acquireRepositoryLock(
+      path.join(lockRoot, `repo-${createHash('sha256').update(commonDirectory).digest('hex')}`),
+      options.repositoryLockTimeoutMs ?? repositoryLockTimeoutMs, signal,
+    );
+    try {
+      await git(['worktree', 'add', '-b', result.branch, result.worktreePath, result.baseRevision], repositoryPath, environment, signal);
+    } finally {
+      await rm(repositoryLockPath, { recursive: true, force: true });
+      repositoryLockPath = undefined;
+    }
     result.browser = { status: input.preview?.enabled ? 'failed' : 'skipped', revision: '', baseRevision: result.baseRevision, screenshots: [] };
     const previewRequest = (phase: 'before' | 'after'): PreviewRequest => ({
       taskId: input.taskId, revision: phase === 'before' ? result.baseRevision : result.revision,
@@ -114,26 +137,35 @@ export async function runMission(rawInput: MissionInput, options: RunOptions = {
       }
     }
     const agent = options.agent || createCodexAgent(secret, runtimeHome, emit);
-    emit({ type: 'phase', role: 'implementation', message: 'Implementing the task in its isolated worktree.' });
-    const implementation = await agent({
-      role: 'implementation', workingDirectory: result.worktreePath, model: input.model, signal,
-      prompt: [
-        'You are the engineering worker for Mission Control. Implement the task below in this worktree only.',
-        'Read the repository instructions. Make a bounded, reviewable change that meets the acceptance criteria.',
-        'Do not commit, switch branches, merge, fetch, push, deploy, delete worktrees, or modify Git configuration.',
-        'Do not read secrets or copy environment files from another checkout. Do not access the source checkout.',
-        'Network access is disabled. Dependencies may be absent; report this honestly instead of fabricating verification.',
-        'A separate runner will commit your changes, execute the configured tests, and request an independent review.',
-        'Finish with a concise summary of the change and any limitations. Do not claim screenshots or tests that were not produced.',
-        `Task title: ${input.title}`,
-        `Request:\n${input.request}`,
-        `Acceptance criteria:\n${input.acceptanceCriteria}`,
-        `Configured test command (argv): ${JSON.stringify(input.testCommand)}`,
-      ].join('\n\n'),
-    });
-    result.summary = redact(implementation.response, secret);
-    addUsage(result.usage, implementation.usage);
-    enforceTokenLimit(result.usage, input.maxTokens);
+    if (input.mode === 'refresh') {
+      emit({ type: 'phase', role: 'implementation', stage: 'code', message: 'Replaying the reviewed change onto the current base revision.' });
+      await replayReviewedChange(input.sourceRevision!, result.worktreePath, environment, signal);
+      result.summary = redact(input.previousSummary ?? '', secret);
+    } else {
+      emit({ type: 'phase', role: 'implementation', stage: 'code', message: 'Implementing the task in its isolated worktree.' });
+      const implementation = await agent({
+        role: 'implementation', workingDirectory: result.worktreePath, model: input.model, signal,
+        prompt: [
+          input.lead
+            ? `You are a sub-agent working for the ${input.lead.name}. Implement the task below in this worktree only.`
+            : 'You are the engineering worker for Mission Control. Implement the task below in this worktree only.',
+          'Read the repository instructions. Make a bounded, reviewable change that meets the acceptance criteria.',
+          'Do not commit, switch branches, merge, fetch, push, deploy, delete worktrees, or modify Git configuration.',
+          'Do not read secrets or copy environment files from another checkout. Do not access the source checkout.',
+          'Network access is disabled. Dependencies may be absent; report this honestly instead of fabricating verification.',
+          'A separate runner will commit your changes, execute the configured tests, and request an independent review.',
+          'Finish with a concise summary of the change and any limitations. Do not claim screenshots or tests that were not produced.',
+          ...(input.lead ? [`Lead instructions:\n${input.lead.instructions}`] : []),
+          `Task title: ${input.title}`,
+          `Request:\n${input.request}`,
+          `Acceptance criteria:\n${input.acceptanceCriteria}`,
+          `Configured test command (argv): ${JSON.stringify(input.testCommand)}`,
+        ].join('\n\n'),
+      });
+      result.summary = redact(implementation.response, secret);
+      addUsage(result.usage, implementation.usage);
+      enforceTokenLimit(result.usage, input.maxTokens);
+    }
     if (await git(['rev-parse', 'HEAD'], result.worktreePath, environment, signal) !== result.baseRevision
       || await git(['branch', '--show-current'], result.worktreePath, environment, signal) !== result.branch) {
       throw new Error('The implementation changed Git history or switched branches. The run cannot be approved.');
@@ -163,7 +195,7 @@ export async function runMission(rawInput: MissionInput, options: RunOptions = {
       await assertStableRevision(result, environment, signal);
       await writeFile(path.join(result.artifactPath, 'browser.json'), JSON.stringify(result.browser, null, 2) + '\n', { mode: 0o600 });
     }
-    emit({ type: 'phase', message: 'Running the configured tests against the committed revision.' });
+    emit({ type: 'phase', stage: 'test', message: 'Running the configured tests against the committed revision.' });
     const testResult = await command([
       process.execPath, codexEntrypoint, 'sandbox', '-c', 'sandbox_mode="workspace-write"',
       '-c', 'sandbox_workspace_write.network_access=false', '--', ...input.testCommand,
@@ -174,7 +206,7 @@ export async function runMission(rawInput: MissionInput, options: RunOptions = {
     if (result.tests.exitCode !== 0) {
       throw new Error(`The configured tests failed (exit ${result.tests.exitCode}). Review tests.txt; dependencies may need to be installed in this worktree.`);
     }
-    emit({ type: 'phase', role: 'review', message: 'An independent read-only agent is reviewing the tested revision.' });
+    emit({ type: 'phase', role: 'review', stage: 'review', message: 'An independent read-only agent is reviewing the tested revision.' });
     const review = await agent({
       role: 'review', workingDirectory: result.worktreePath, model: input.model, signal, outputSchema: reviewSchema,
       images: result.browser.screenshots.map((screenshot) => path.join(result.artifactPath, screenshot.file)),
@@ -221,11 +253,61 @@ export async function runMission(rawInput: MissionInput, options: RunOptions = {
         result.error = `${result.error ? result.error + ' ' : ''}Could not save the final evidence package.`;
       }
     }
-    if (ownedLock && lockPath) {
-      await rm(lockPath, { recursive: true, force: true });
+    if (repositoryLockPath) {
+      await rm(repositoryLockPath, { recursive: true, force: true });
+    }
+    if (taskLockPath) {
+      await rm(taskLockPath, { recursive: true, force: true });
     }
   }
   return result;
+}
+
+/**
+ * Takes the per-repository lock that serialises `git worktree add`, retrying every 250 ms.
+ * A lock still held after the timeout is reported with its path and never removed, since it may belong to a live process.
+ */
+async function acquireRepositoryLock(lockPath: string, timeoutMs: number, signal: AbortSignal): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    signal.throwIfAborted();
+    try {
+      await mkdir(lockPath, { mode: 0o700 });
+      return lockPath;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw error;
+      }
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`Another worker has held the repository lock for over ${Math.round(timeoutMs / 1000)} seconds while creating a worktree. If no worker is creating a worktree for this repository, remove ${lockPath} and retry.`);
+    }
+    try {
+      await delay(Math.min(repositoryLockRetryMs, Math.max(0, deadline - Date.now())), undefined, { signal });
+    } catch (error) {
+      signal.throwIfAborted();
+      throw error;
+    }
+  }
+}
+
+/**
+ * Applies an already-reviewed commit to the worktree's index and files without committing, so the normal staging checks and commit follow.
+ * A conflict is undone before failing, leaving the worktree at its base revision with no half-applied change.
+ */
+async function replayReviewedChange(sourceRevision: string, worktreePath: string, environment: Record<string, string>, signal: AbortSignal): Promise<void> {
+  try {
+    await git(['-c', 'user.name=Mission Control', '-c', 'user.email=mission-control@localhost', 'cherry-pick', '--no-commit', '--end-of-options', sourceRevision], worktreePath, environment, signal);
+  } catch {
+    signal.throwIfAborted();
+    try {
+      await git(['cherry-pick', '--abort'], worktreePath, environment, signal);
+    } catch {
+      // `--no-commit` records no cherry-pick in progress, so `--abort` can refuse; `reset --merge` below undoes the attempt either way.
+    }
+    await git(['reset', '--merge'], worktreePath, environment, signal);
+    throw new Error('This change no longer applies to the current base. Run the task again.');
+  }
 }
 
 function enforceTokenLimit(usage: TokenUsage, limit: number): void {

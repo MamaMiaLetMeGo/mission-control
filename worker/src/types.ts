@@ -19,6 +19,13 @@ export interface MissionInput {
   preview?: PreviewConfig;
   previewRoot?: string;
   previewDatabase?: PreviewDatabase;
+  lead?: { name: string; instructions: string };
+  /** `refresh` replays `sourceRevision` onto the current base instead of calling the implementation agent. Defaults to `implement`. */
+  mode?: 'implement' | 'refresh';
+  /** The already-reviewed commit to replay. Full 40-64 character hex hash; required in refresh mode and rejected otherwise. */
+  sourceRevision?: string;
+  /** The summary of the run that produced `sourceRevision`, reused as the refreshed run's summary. */
+  previousSummary?: string;
 }
 
 export interface TokenUsage {
@@ -32,6 +39,7 @@ export interface TokenUsage {
 export interface WorkerEvent {
   type: 'phase' | 'thread' | 'usage' | 'message';
   role?: Role;
+  stage?: 'code' | 'test' | 'review';
   message?: string;
   threadId?: string;
   usage?: TokenUsage;

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Decision;
+use App\Models\Lead;
 use App\Models\MissionTask;
 use App\Services\MissionQueue;
 use App\Services\MissionSettings;
@@ -16,7 +17,7 @@ class DashboardController extends Controller
 {
     public function __invoke(Request $request, MissionSettings $missionSettings, RepositorySync $repository, MissionQueue $queue): View
     {
-        return view('mission.dashboard', [...$queue->data($this->filters($request)), 'settings' => $missionSettings->all(), 'readiness' => $missionSettings->readiness(), 'repositoryStatus' => $repository->status()]);
+        return view('mission.dashboard', [...$queue->data($this->filters($request)), 'leads' => Lead::query()->orderBy('position')->orderBy('id')->get(), 'settings' => $missionSettings->all(), 'readiness' => $missionSettings->readiness(), 'repositoryStatus' => $repository->status()]);
     }
 
     public function status(Request $request, MissionQueue $queue): JsonResponse
@@ -40,7 +41,7 @@ class DashboardController extends Controller
     {
         return $request->validate([
             'status' => ['nullable', Rule::in(MissionTask::STATUSES)],
-            'area' => ['nullable', Rule::in(MissionTask::AREAS)],
+            'lead' => ['nullable', 'string', Rule::exists('leads', 'key')],
             'q' => ['nullable', 'string', 'max:200'],
             'page' => ['nullable', 'integer', 'min:1', 'max:100000'],
         ]);
