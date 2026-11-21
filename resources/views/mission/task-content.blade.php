@@ -3,6 +3,8 @@
     $review = $task->review_data ?? [];
     $testEvidence = $review['tests'] ?? null;
     $independentReview = $review['review'] ?? null;
+    $securityCheck = is_array($review['security'] ?? null) ? $review['security'] : null;
+    $securityFindings = collect($securityCheck['findings'] ?? [])->filter(fn ($finding) => is_array($finding));
     $canRun = in_array($task->status, ['backlog', 'failed', 'changes_requested', 'deferred']);
     $canDecide = ! in_array($task->status, ['queued', 'running', 'merged', 'rejected']);
     $canRequestChanges = in_array($task->status, ['review', 'approved', 'failed']);
@@ -28,7 +30,7 @@
         return true;
     });
     $browserPassed = ($browser['status'] ?? null) === 'passed' && $browserRevisionMatches && $capturesComplete;
-    $canApprove = in_array($task->status, ['review', 'deferred']) && $task->revision && ($testEvidence['exitCode'] ?? null) === 0 && ($independentReview['verdict'] ?? null) === 'pass' && (! $captureRequested || $browserPassed);
+    $canApprove = in_array($task->status, ['review', 'deferred']) && $task->revision && ($testEvidence['exitCode'] ?? null) === 0 && ($independentReview['verdict'] ?? null) === 'pass' && ($securityCheck['verdict'] ?? null) === 'pass' && (! $captureRequested || $browserPassed);
     $canPreview = $captureRequested && $task->revision && in_array($task->status, ['review', 'approved', 'deferred', 'failed'], true);
     $livePreview = $canPreview && ($preview['revision'] ?? null) === $task->revision ? $preview : null;
 @endphp
@@ -74,6 +76,9 @@
                 @if($independentReview)
                 <div class="evidence-block"><div class="flex items-center justify-between gap-4"><h3 class="font-semibold text-sm">Independent review</h3><span class="status-badge {{ ($independentReview['verdict'] ?? '') === 'pass' ? 'status-merged' : 'status-changes_requested' }}">{{ ($independentReview['verdict'] ?? '') === 'pass' ? 'Passed' : 'Changes requested' }}</span></div>@if((int) ($review['reviewRounds'] ?? 0) > 0 && (($independentReview['verdict'] ?? null) === 'pass' || ($review['error'] ?? null) === 'The independent reviewer requested changes.'))<p class="text-xs text-muted mt-2">The sub-agent fixed reviewer findings {{ (int) $review['reviewRounds'] }} time(s) before this review.</p>@endif<p class="prose-text mt-3">{{ $independentReview['summary'] ?? 'No review summary was provided.' }}</p>@if(! empty($independentReview['findings']))<ul class="mt-3 text-sm list-disc pl-5 space-y-2 text-muted">@foreach($independentReview['findings'] as $finding)<li>{{ is_string($finding) ? $finding : json_encode($finding) }}</li>@endforeach</ul>@endif</div>
                 @else<p class="text-sm text-muted">No independent review has been recorded.</p>@endif
+                @if($securityCheck)
+                <div class="evidence-block"><div class="flex items-center justify-between gap-4"><h3 class="font-semibold text-sm">Security check</h3><span class="status-badge {{ ($securityCheck['verdict'] ?? '') === 'pass' ? 'status-merged' : 'status-failed' }}">{{ ($securityCheck['verdict'] ?? '') === 'pass' ? 'Passed' : 'Not passing' }}</span></div><p class="prose-text mt-3">{{ is_string($securityCheck['summary'] ?? null) ? $securityCheck['summary'] : 'No security summary was provided.' }}</p>@if($securityFindings->isNotEmpty())<ul class="mt-3 text-sm space-y-2 text-muted">@foreach($securityFindings as $finding)<li class="flex flex-wrap items-baseline gap-2"><span class="status-badge {{ ($finding['severity'] ?? '') === 'high' ? 'status-failed' : (($finding['severity'] ?? '') === 'medium' ? 'status-changes_requested' : '') }}">{{ is_string($finding['severity'] ?? null) ? $finding['severity'] : 'unknown' }}</span>@if(is_string($finding['file'] ?? null) && $finding['file'] !== '')<code class="text-xs break-all">{{ $finding['file'] }}</code>@endif<span>{{ is_string($finding['note'] ?? null) ? $finding['note'] : '' }}</span></li>@endforeach</ul>@endif</div>
+                @else<p class="text-sm text-muted">No security check has been recorded.</p>@endif
                 @if($testEvidence)
                 <div class="evidence-block"><div class="flex items-center justify-between gap-4"><h3 class="font-semibold text-sm">Test verification</h3><span class="status-badge {{ ($testEvidence['exitCode'] ?? null) === 0 ? 'status-merged' : 'status-failed' }}">{{ ($testEvidence['exitCode'] ?? null) === 0 ? 'Passed' : 'Not passing' }}</span></div><code class="block text-xs text-muted break-all mt-3">{{ implode(' ', $testEvidence['command'] ?? []) }}</code><details class="evidence-details mt-4"><summary>View test output</summary><pre class="log-output mt-3">{{ $testEvidence['output'] ?? 'No test output was captured.' }}</pre></details></div>
                 @else<p class="text-sm text-muted">No test results have been recorded.</p>@endif
@@ -82,6 +87,7 @@
                     <a class="button button-secondary button-small" href="{{ route('tasks.artifact', ['task' => $task, 'file' => 'diff.patch']) }}">@include('mission.icon', ['name' => 'file', 'class' => 'size-3.5'])Download code diff</a>
                     @if($testEvidence)<a class="button button-secondary button-small" href="{{ route('tasks.artifact', ['task' => $task, 'file' => 'tests.txt']) }}">Test output</a>@endif
                     @if($independentReview)<a class="button button-secondary button-small" href="{{ route('tasks.artifact', ['task' => $task, 'file' => 'review.json']) }}">Review record</a>@endif
+                    @if($securityCheck)<a class="button button-secondary button-small" href="{{ route('tasks.artifact', ['task' => $task, 'file' => 'security.json']) }}">Security record</a>@endif
                 </div>
                 @endif
                 @if($task->revision)<div class="flex flex-col gap-2"><h3 class="section-label mb-0">Reviewed revision</h3><code class="revision-code">{{ $task->revision }}</code></div>@endif

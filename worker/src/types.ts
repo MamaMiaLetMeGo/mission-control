@@ -59,6 +59,18 @@ export interface Review {
   findings: string[];
 }
 
+export interface SecurityFinding {
+  severity: 'high' | 'medium' | 'low';
+  file: string;
+  note: string;
+}
+
+export interface SecurityCheck {
+  verdict: 'pass' | 'fail';
+  summary: string;
+  findings: SecurityFinding[];
+}
+
 export interface WorkerResult {
   type: 'result';
   success: boolean;
@@ -76,6 +88,8 @@ export interface WorkerResult {
   /** Each earlier `changes_requested` review, oldest first. `review` is always the final one. */
   reviewHistory: Review[];
   tests: { command: string[]; exitCode: number; output: string };
+  /** The security check of the final revision: the automatic diff scan plus the read-only security reviewer. */
+  security: SecurityCheck;
   usage: TokenUsage;
   browser?: {
     status: 'passed' | 'failed' | 'skipped';

@@ -39,6 +39,7 @@ class MissionMergeTest extends TestCase
         $response = $this->post(route('tasks.decide', $task), ['action' => 'approve', 'revision' => $task->revision]);
 
         $response->assertRedirect(route('tasks.show', $task));
+        $this->assertSame('pass', data_get($task->review_data, 'security.verdict'));
         $this->assertSame('approved', $task->refresh()->status);
         $this->assertSame($task->base_revision, $this->git($repository, ['rev-parse', 'HEAD']));
         $this->assertDatabaseHas('decisions', ['mission_task_id' => $task->id, 'action' => 'approve', 'revision' => $task->revision]);
@@ -345,9 +346,11 @@ class MissionMergeTest extends TestCase
         mkdir($root.'/artifacts/task');
         config(['mission.artifact_root' => $root.'/artifacts']);
         file_put_contents($root.'/artifacts/task/diff.patch', 'fixture diff');
+        file_put_contents($root.'/artifacts/task/security.json', '{"verdict":"pass"}');
         $task->update(['artifact_path' => $root.'/artifacts/task']);
 
         $this->get(route('tasks.artifact', [$task, 'diff.patch']))->assertOk()->assertDownload('diff.patch');
+        $this->get(route('tasks.artifact', [$task, 'security.json']))->assertOk()->assertDownload('security.json');
         $this->get(route('tasks.artifact', [$task, 'unknown.txt']))->assertNotFound();
     }
 

@@ -234,6 +234,6 @@ class MissionProgressTest extends TestCase
             }
         }
 
-        return ['success' => true, 'revision' => $revision, 'baseRevision' => $base, 'summary' => 'Available Languages is ready', 'tests' => ['command' => ['php', '-l', 'heading.php'], 'exitCode' => 0, 'output' => 'No syntax errors'], 'review' => ['verdict' => 'pass', 'summary' => 'The requested change is complete', 'findings' => []], 'browser' => ['status' => 'passed', 'revision' => $revision, 'baseRevision' => $base, 'screenshots' => $screenshots]];
+        return ['success' => true, 'revision' => $revision, 'baseRevision' => $base, 'summary' => 'Available Languages is ready', 'tests' => ['command' => ['php', '-l', 'heading.php'], 'exitCode' => 0, 'output' => 'No syntax errors'], 'review' => ['verdict' => 'pass', 'summary' => 'The requested change is complete', 'findings' => []], 'security' => ['verdict' => 'pass', 'summary' => 'No security problems found.', 'findings' => []], 'browser' => ['status' => 'passed', 'revision' => $revision, 'baseRevision' => $base, 'screenshots' => $screenshots]];
     }
 }

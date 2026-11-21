@@ -87,7 +87,7 @@ class RunMissionTask implements ShouldQueue
                 }
                 $run->update($attributes);
             });
-            $successful = ($result['success'] ?? false) === true && data_get($result, 'tests.exitCode') === 0 && data_get($result, 'review.verdict') === 'pass';
+            $successful = ($result['success'] ?? false) === true && data_get($result, 'tests.exitCode') === 0 && data_get($result, 'review.verdict') === 'pass' && data_get($result, 'security.verdict') === 'pass';
             $noLongerApplies = ! $successful && ($run->settings['mode'] ?? null) === 'refresh' && ($result['error'] ?? null) === MissionWorkflow::REFRESH_CONFLICT;
             DB::transaction(function () use ($run, $result, $successful, $noLongerApplies): void {
                 $currentRun = AgentRun::query()->lockForUpdate()->find($run->id);

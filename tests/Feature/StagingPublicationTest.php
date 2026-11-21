@@ -384,7 +384,7 @@ class StagingPublicationTest extends TestCase
         $revision = $this->git($worktree, ['rev-parse', 'HEAD']);
         $this->git($integration, ['merge', '--ff-only', $revision]);
         config(['mission.repository_path' => $integration, 'mission.base_branch' => 'integration-base', 'mission.worktree_root' => dirname($worktree), 'mission.integration_root' => dirname($integration)]);
-        $result = ['success' => true, 'revision' => $revision, 'baseRevision' => $base, 'tests' => ['exitCode' => 0, 'command' => ['php', '-l', 'view.blade.php']], 'review' => ['verdict' => 'pass', 'summary' => 'The heading change is correct.']];
+        $result = ['success' => true, 'revision' => $revision, 'baseRevision' => $base, 'tests' => ['exitCode' => 0, 'command' => ['php', '-l', 'view.blade.php']], 'review' => ['verdict' => 'pass', 'summary' => 'The heading change is correct.'], 'security' => ['verdict' => 'pass', 'summary' => 'No security problems found.', 'findings' => []]];
         $task = MissionTask::factory()->create(['status' => 'merged', 'request' => 'internal workflow instructions', 'recommendation' => 'The homepage section now says Available Languages.', 'revision' => $revision, 'base_revision' => $base, 'branch' => 'mission/task-test', 'worktree_path' => $worktree, 'review_data' => $result]);
         AgentRun::factory()->for($task, 'task')->create(['status' => 'completed', 'result' => $result, 'settings' => ['repository_path' => $repository, 'base_branch' => 'integration-base', 'preview_enabled' => false]]);
         foreach (['approve', 'merge'] as $action) {

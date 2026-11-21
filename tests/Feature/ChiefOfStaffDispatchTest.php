@@ -190,7 +190,7 @@ class ChiefOfStaffDispatchTest extends TestCase
         $run = AgentRun::factory()->for(MissionTask::factory()->forGoal($goal, 1)->state(['status' => 'queued']), 'task')->create();
         $next = MissionTask::factory()->forGoal($goal, 2)->create();
         $worker = $this->mock(CodexProcess::class, function ($mock): void {
-            $mock->shouldReceive('run')->once()->andReturn(['success' => true, 'tests' => ['exitCode' => 0], 'review' => ['verdict' => 'pass'], 'revision' => str_repeat('a', 40)]);
+            $mock->shouldReceive('run')->once()->andReturn(['success' => true, 'tests' => ['exitCode' => 0], 'review' => ['verdict' => 'pass'], 'security' => ['verdict' => 'pass', 'summary' => 'No security problems found.', 'findings' => []], 'revision' => str_repeat('a', 40)]);
         });
 
         (new RunMissionTask($run->id))->handle($worker);

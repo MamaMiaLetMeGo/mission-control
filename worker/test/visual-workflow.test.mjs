@@ -31,6 +31,9 @@ test('captures both revisions and viewport sizes, gives images to review, and ke
       await writeFile(path.join(request.workingDirectory, 'index.html'), '<!doctype html><meta name="viewport" content="width=device-width"><h1>After the change</h1>');
       return { response: 'Updated the heading.', usage: emptyUsage() };
     }
+    if (request.role === 'security') {
+      return { response: JSON.stringify({ verdict: 'pass', summary: 'No security problems found.', findings: [] }), usage: emptyUsage() };
+    }
     reviewImages = request.images;
     return { response: JSON.stringify({ verdict: 'pass', summary: 'Fixture reviewer passed.', findings: [] }), usage: emptyUsage() };
   } });
@@ -77,6 +80,9 @@ test('a fix round replaces the rejected after screenshots and keeps only the fin
     if (request.role === 'implementation') {
       await writeFile(path.join(request.workingDirectory, 'index.html'), page(headings.shift()));
       return { response: 'Updated the heading.', usage: emptyUsage() };
+    }
+    if (request.role === 'security') {
+      return { response: JSON.stringify({ verdict: 'pass', summary: 'No security problems found.', findings: [] }), usage: emptyUsage() };
     }
     reviewImages.push(request.images);
     if (reviewImages.length === 1) {

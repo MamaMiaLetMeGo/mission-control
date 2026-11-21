@@ -49,7 +49,7 @@ class MissionRefreshTest extends TestCase
 
         $run = $task->runs()->first();
         $this->assertSame('queued', $task->refresh()->status);
-        $result = ['type' => 'result', 'success' => true, 'summary' => 'Improved the lesson.', 'revision' => str_repeat('c', 40), 'baseRevision' => str_repeat('d', 40), 'review' => ['verdict' => 'pass'], 'tests' => ['exitCode' => 0]];
+        $result = ['type' => 'result', 'success' => true, 'summary' => 'Improved the lesson.', 'revision' => str_repeat('c', 40), 'baseRevision' => str_repeat('d', 40), 'review' => ['verdict' => 'pass'], 'tests' => ['exitCode' => 0], 'security' => ['verdict' => 'pass', 'summary' => 'No security problems found.', 'findings' => []]];
         $worker = $this->mock(CodexProcess::class, function ($mock) use ($result, $run): void {
             $mock->shouldReceive('run')->once()->withArgs(fn ($given) => $given->id === $run->id)->andReturn($result);
         });

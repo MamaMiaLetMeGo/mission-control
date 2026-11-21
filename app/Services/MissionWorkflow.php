@@ -222,8 +222,8 @@ class MissionWorkflow
                 if (! in_array($task->status, ['review', 'deferred'], true) || ! $revision || $revision !== $task->revision) {
                     $this->reject('Reload the current review before approving its exact revision.');
                 }
-                if (data_get($task->review_data, 'success') !== true || data_get($task->review_data, 'review.verdict') !== 'pass' || data_get($task->review_data, 'tests.exitCode') !== 0) {
-                    $this->reject('Approval requires passing tests and an independent review of this revision.');
+                if (data_get($task->review_data, 'success') !== true || data_get($task->review_data, 'review.verdict') !== 'pass' || data_get($task->review_data, 'tests.exitCode') !== 0 || data_get($task->review_data, 'security.verdict') !== 'pass') {
+                    $this->reject('Approval requires passing tests, an independent review and a security check of this revision. Refresh or re-run a task reviewed before security checks existed.');
                 }
                 $this->git->assertReviewedRevision($task);
                 $this->evidence->assertComplete($task);

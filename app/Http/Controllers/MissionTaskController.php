@@ -127,7 +127,7 @@ class MissionTaskController extends Controller
 
     public function artifact(MissionTask $task, string $file): BinaryFileResponse
     {
-        abort_unless(in_array($file, ['diff.patch', 'tests.txt', 'review.json', 'result.json'], true), 404);
+        abort_unless(in_array($file, ['diff.patch', 'tests.txt', 'review.json', 'security.json', 'result.json'], true), 404);
         $root = realpath(config('mission.artifact_root'));
         $directory = $task->artifact_path ? realpath($task->artifact_path) : false;
         abort_unless($root && $directory && str_starts_with($directory, $root.DIRECTORY_SEPARATOR), 404);

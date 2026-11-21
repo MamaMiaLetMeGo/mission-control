@@ -28,7 +28,7 @@ class MissionTaskFactory extends Factory
             'status' => 'review',
             'revision' => str_repeat('a', 40),
             'base_revision' => str_repeat('b', 40),
-            'review_data' => ['success' => true, 'review' => ['verdict' => 'pass'], 'tests' => ['exitCode' => 0]],
+            'review_data' => ['success' => true, 'review' => ['verdict' => 'pass'], 'tests' => ['exitCode' => 0], 'security' => ['verdict' => 'pass', 'summary' => 'No security problems found.', 'findings' => []]],
         ]);
     }
 

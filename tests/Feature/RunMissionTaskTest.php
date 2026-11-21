@@ -27,7 +27,7 @@ class RunMissionTaskTest extends TestCase
         $this->freezeTime();
         config(['mission.openai_api_key' => 'test-key']);
         $run = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'queued']), 'task')->create();
-        $result = ['type' => 'result', 'success' => true, 'summary' => 'Improved the lesson controls.', 'revision' => str_repeat('a', 40), 'baseRevision' => str_repeat('b', 40), 'review' => ['verdict' => 'pass'], 'tests' => ['exitCode' => 0], 'usage' => ['input_tokens' => 25]];
+        $result = ['type' => 'result', 'success' => true, 'summary' => 'Improved the lesson controls.', 'revision' => str_repeat('a', 40), 'baseRevision' => str_repeat('b', 40), 'review' => ['verdict' => 'pass'], 'tests' => ['exitCode' => 0], 'security' => ['verdict' => 'pass', 'summary' => 'No security problems found.', 'findings' => []], 'usage' => ['input_tokens' => 25]];
         $worker = $this->mock(CodexProcess::class, function ($mock) use ($result): void {
             $mock->shouldReceive('run')->once()->andReturnUsing(function ($run, $callback) use ($result) {
                 $callback(['type' => 'thread', 'threadId' => 'thread-123', 'role' => 'implementation']);
@@ -57,6 +57,21 @@ class RunMissionTaskTest extends TestCase
 
         $this->assertSame('failed', $run->refresh()->status);
         $this->assertSame('failed', $run->task->status);
+    }
+
+    public function test_a_run_whose_security_check_failed_never_enters_the_review_queue(): void
+    {
+        config(['mission.openai_api_key' => 'test-key']);
+        $run = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'queued']), 'task')->create();
+        $worker = $this->mock(CodexProcess::class, function ($mock): void {
+            $mock->shouldReceive('run')->once()->andReturn(['success' => true, 'tests' => ['exitCode' => 0], 'review' => ['verdict' => 'pass'], 'security' => ['verdict' => 'fail', 'summary' => 'Injection.', 'findings' => []], 'error' => 'The security check found a problem.']);
+        });
+
+        (new RunMissionTask($run->id))->handle($worker);
+
+        $this->assertSame('failed', $run->refresh()->status);
+        $this->assertSame('failed', $run->task->status);
+        $this->assertSame('The security check found a problem.', $run->task->error);
     }
 
     public function test_a_duplicate_delivery_does_not_repeat_an_agent_run(): void
@@ -107,7 +122,7 @@ class RunMissionTaskTest extends TestCase
                 $run->update(['status' => 'failed', 'error' => 'Previously recovered']);
                 $run->task->update(['status' => 'failed']);
 
-                return ['success' => true, 'tests' => ['exitCode' => 0], 'review' => ['verdict' => 'pass']];
+                return ['success' => true, 'tests' => ['exitCode' => 0], 'review' => ['verdict' => 'pass'], 'security' => ['verdict' => 'pass', 'summary' => 'No security problems found.', 'findings' => []]];
             });
         });
 
@@ -177,7 +192,7 @@ class RunMissionTaskTest extends TestCase
         $this->assertTrue($held->get());
         $run = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'queued']), 'task')->create();
         $worker = $this->mock(CodexProcess::class, function ($mock): void {
-            $mock->shouldReceive('run')->once()->andReturn(['success' => true, 'tests' => ['exitCode' => 0], 'review' => ['verdict' => 'pass']]);
+            $mock->shouldReceive('run')->once()->andReturn(['success' => true, 'tests' => ['exitCode' => 0], 'review' => ['verdict' => 'pass'], 'security' => ['verdict' => 'pass', 'summary' => 'No security problems found.', 'findings' => []]]);
         });
         $job = (new RunMissionTask($run->id))->withFakeQueueInteractions();
 
