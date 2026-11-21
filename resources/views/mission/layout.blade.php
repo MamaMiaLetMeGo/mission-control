@@ -25,6 +25,7 @@
                 <span class="nav-count" data-review-count @if(($counts['review'] ?? 0) < 1) hidden @endif>{{ $counts['review'] ?? 0 }}</span>
             </a>
             <a class="nav-item {{ request()->routeIs('profile') ? 'nav-active' : '' }}" href="{{ route('profile') }}" @if(request()->routeIs('profile')) aria-current="page" @endif>@include('mission.icon', ['name' => 'profile'])<span>Decision journal</span></a>
+            <a class="nav-item {{ request()->routeIs('brain.*') ? 'nav-active' : '' }}" href="{{ route('brain.index') }}" @if(request()->routeIs('brain.*')) aria-current="page" @endif>@include('mission.icon', ['name' => 'spark'])<span>Brain</span>@if(($unseenBrainCount ?? 0) > 0 && ! request()->routeIs('brain.*'))<span class="nav-count" data-brain-count>{{ $unseenBrainCount }}</span>@endif</a>
             <a class="nav-item {{ request()->routeIs('settings.*') ? 'nav-active' : '' }}" href="{{ route('settings.edit') }}" @if(request()->routeIs('settings.*')) aria-current="page" @endif>@include('mission.icon', ['name' => 'settings'])<span>Settings</span></a>
         </nav>
         <div class="sidebar-team">
