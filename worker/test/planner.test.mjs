@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, stat, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, stat, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { git, safeEnvironment } from '../dist/process.js';
 import { runPlanning, validatePlan, validatePlanInput } from '../dist/planner.js';
@@ -128,4 +128,21 @@ test('requires an API key when no agent is injected', async (t) => {
   const result = await runPlanning(input, { apiKey: '' });
   assert.equal(result.success, false);
   assert.match(result.error, /OPENAI_API_KEY is missing/);
+});
+
+test('aborting while the agent runs removes the planning worktree, its record and the lock', async (t) => {
+  const { input, repositoryPath, environment } = await fixture(t);
+  const controller = new AbortController();
+  let workingDirectory = '';
+  const result = await runPlanning(input, { signal: controller.signal, agent: async (request) => {
+    workingDirectory = request.workingDirectory;
+    controller.abort(new Error('The worker was stopped.'));
+    request.signal.throwIfAborted();
+    return { response: JSON.stringify(plan()), usage: emptyUsage() };
+  } });
+  assert.equal(result.success, false);
+  assert.match(result.error, /stopped/);
+  await assert.rejects(stat(workingDirectory));
+  assert.deepEqual(await planWorktrees(repositoryPath, environment), []);
+  assert.deepEqual((await readdir(path.join(input.worktreeRoot, '.locks'))).filter((name) => name.startsWith('repo-')), []);
 });

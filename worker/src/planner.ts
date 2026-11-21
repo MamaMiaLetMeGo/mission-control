@@ -224,8 +224,8 @@ export async function runPlanning(input: PlanInput, options: RunOptions = {}): P
     const baseRevision = await git(['rev-parse', '--verify', '--end-of-options', `refs/heads/${input.baseBranch}^{commit}`], repositoryPath, environment, signal);
     const created = path.join(worktreeRoot, `plan-${input.goalId}-${randomUUID()}`);
     emit({ type: 'phase', role: 'planning', message: 'The Chief of Staff is reading the repository and writing briefs.' });
-    await withRepositoryLock(lockPath, lockTimeoutMs, signal, () => git(['worktree', 'add', '--detach', created, baseRevision], repositoryPath, environment, signal));
     worktreePath = created;
+    await withRepositoryLock(lockPath, lockTimeoutMs, signal, () => git(['worktree', 'add', '--detach', created, baseRevision], repositoryPath, environment, signal));
     const agent = options.agent || createCodexAgent(secret, runtimeHome, emit);
     const planning = await agent({
       role: 'planning', workingDirectory: worktreePath, model: input.model, signal, outputSchema: planSchema, prompt: planningPrompt(input),
@@ -249,12 +249,18 @@ export async function runPlanning(input: PlanInput, options: RunOptions = {}): P
     result.error = redact(error instanceof Error ? error.message : String(error), secret);
   } finally {
     if (worktreePath) {
+      const cleanupSignal = new AbortController().signal;
       try {
-        await withRepositoryLock(lockPath, lockTimeoutMs, new AbortController().signal, () => git(['worktree', 'remove', '--force', worktreePath], repositoryPath, environment));
+        await withRepositoryLock(lockPath, lockTimeoutMs, cleanupSignal, () => git(['worktree', 'remove', '--force', worktreePath], repositoryPath, environment));
       } catch {
-        // If git could not remove it (for example the lock timed out), the directory is deleted below and `git worktree prune` clears the record.
+        // The worktree may be half-created (the run was aborted during `git worktree add`) or the lock may have timed out; the fallback below deletes the directory and prunes its record.
       }
       await rm(worktreePath, { recursive: true, force: true });
+      try {
+        await withRepositoryLock(lockPath, lockTimeoutMs, cleanupSignal, () => git(['worktree', 'prune'], repositoryPath, environment));
+      } catch {
+        // A failed prune only leaves a stale record that the next prune clears.
+      }
     }
   }
   return result;
