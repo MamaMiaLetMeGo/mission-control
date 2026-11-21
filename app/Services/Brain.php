@@ -7,11 +7,14 @@ use App\Models\BrainRun;
 use App\Models\Decision;
 use App\Models\Lead;
 use App\Models\Preference;
+use Closure;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
+use RuntimeException;
 
 class Brain
 {
@@ -155,6 +158,31 @@ class Brain
     public function apply(BrainRun $run, array $result): void
     {
         [$summary, $changes] = $this->validated($run, $result);
+        try {
+            $this->withPreferenceLock(fn () => $this->applyChanges($run, $summary, $changes));
+        } catch (LockTimeoutException) {
+            throw new RuntimeException('Preferences were being changed at the same time. Try learning again in a moment.');
+        }
+    }
+
+    /**
+     * Run a change that can raise the number of active preferences while holding the one lock every such change takes.
+     *
+     * @template T
+     *
+     * @param  Closure(): T  $callback
+     * @return T
+     */
+    public function withPreferenceLock(Closure $callback): mixed
+    {
+        return Cache::lock('mission-preferences', 30)->block(5, $callback);
+    }
+
+    /**
+     * @param  array<string, mixed>  $changes
+     */
+    private function applyChanges(BrainRun $run, string $summary, array $changes): void
+    {
         DB::transaction(function () use ($run, $summary, $changes): void {
             $current = BrainRun::query()->lockForUpdate()->find($run->id);
             if (! $current || $current->status !== 'learning') {

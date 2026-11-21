@@ -9,6 +9,8 @@ use App\Models\Lead;
 use App\Models\MissionTask;
 use App\Models\Preference;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
@@ -172,6 +174,31 @@ class BrainControllerTest extends TestCase
 
         $this->assertSame(1, substr_count($response->getContent(), 'role="alert">20 preferences are already active. Switch one off first.'));
         $this->assertSame('off', $off->fresh()->status);
+    }
+
+    public function test_changes_that_could_raise_the_active_count_wait_on_the_shared_lock(): void
+    {
+        $off = Preference::factory()->off()->create();
+        $held = Cache::lock('mission-preferences', 30);
+        $this->assertTrue($held->get());
+
+        $this->from(route('brain.index'))->post(route('brain.store'), ['text' => 'Blocked.'])->assertRedirect(route('brain.index'))->assertSessionHasErrors('workflow');
+        $this->from(route('brain.index'))->post(route('brain.update', $off), ['status' => 'active'])->assertSessionHasErrors('workflow');
+        $held->release();
+
+        $this->assertDatabaseCount('preferences', 1);
+        $this->assertSame('off', $off->fresh()->status);
+    }
+
+    public function test_the_cap_check_never_locks_an_aggregate_query(): void
+    {
+        DB::enableQueryLog();
+
+        $this->post(route('brain.store'), ['text' => 'Counted.'])->assertSessionHasNoErrors();
+
+        $counts = collect(DB::getQueryLog())->pluck('query')->filter(fn (string $sql): bool => str_contains(strtolower($sql), 'count('));
+        $this->assertNotEmpty($counts);
+        $counts->each(fn (string $sql) => $this->assertStringNotContainsString('for update', strtolower($sql)));
     }
 
     public function test_the_journal_points_to_the_brain(): void

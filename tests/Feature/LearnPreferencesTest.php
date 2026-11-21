@@ -11,6 +11,7 @@ use App\Services\CodexProcess;
 use App\Services\RunSlots;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Queue\MaxAttemptsExceededException;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
@@ -82,6 +83,26 @@ class LearnPreferencesTest extends TestCase
         $this->assertSame('active', $preference->refresh()->status);
         $this->assertSame(1, Preference::query()->count());
         $this->assertCount(2, app(Brain::class)->pendingDecisions());
+        $this->assertSlotIsFree();
+    }
+
+    public function test_a_busy_preference_lock_fails_the_run_with_a_plain_message(): void
+    {
+        config(['mission.openai_api_key' => 'test-key']);
+        $run = $this->queuedRun();
+        $result = ['type' => 'learn', 'success' => true, 'summary' => 'Learned one thing.', 'usage' => ['input_tokens' => 5], 'changes' => [
+            ['op' => 'add', 'text' => 'Keep onboarding short.', 'lead' => null, 'evidence' => [$run->decision_ids[0]]],
+        ]];
+        $held = Cache::lock('mission-preferences', 30);
+        $this->assertTrue($held->get());
+
+        (new LearnPreferences($run->id))->handle($this->workerReturning($result), app(Brain::class));
+        $held->release();
+
+        $run->refresh();
+        $this->assertSame('failed', $run->status);
+        $this->assertSame('Preferences were being changed at the same time. Try learning again in a moment.', $run->error);
+        $this->assertDatabaseCount('preferences', 0);
         $this->assertSlotIsFree();
     }
 

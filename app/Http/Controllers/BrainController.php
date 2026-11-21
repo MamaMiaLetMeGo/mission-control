@@ -50,7 +50,7 @@ class BrainController extends Controller
     {
         $data = $this->validated($request, $brain, false);
 
-        DB::transaction(function () use ($data, $brain): void {
+        $brain->withPreferenceLock(fn () => DB::transaction(function () use ($data, $brain): void {
             $this->guardCap();
             Preference::query()->create([
                 'text' => $brain->clean($data['text']),
@@ -58,7 +58,7 @@ class BrainController extends Controller
                 'status' => 'active',
                 'source' => 'manual',
             ]);
-        });
+        }));
 
         return to_route('brain.index')->with('status', 'Preference added.');
     }
@@ -67,7 +67,7 @@ class BrainController extends Controller
     {
         $data = $this->validated($request, $brain, true);
 
-        DB::transaction(function () use ($data, $brain, $preference): void {
+        $brain->withPreferenceLock(fn () => DB::transaction(function () use ($data, $brain, $preference): void {
             $preference = Preference::query()->lockForUpdate()->findOrFail($preference->id);
             if ($data['status'] === 'active' && $preference->status !== 'active') {
                 $this->guardCap();
@@ -82,7 +82,7 @@ class BrainController extends Controller
                 $changes['seen_at'] = now();
             }
             $preference->update($changes);
-        });
+        }));
 
         return to_route('brain.index')->with('status', 'Preference saved.');
     }
@@ -123,7 +123,7 @@ class BrainController extends Controller
 
     private function guardCap(): void
     {
-        if (Preference::query()->active()->lockForUpdate()->count() >= Preference::MAX_ACTIVE) {
+        if (Preference::query()->active()->count() >= Preference::MAX_ACTIVE) {
             throw ValidationException::withMessages(['text' => Preference::MAX_ACTIVE.' preferences are already active. Switch one off first.']);
         }
     }
