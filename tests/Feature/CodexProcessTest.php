@@ -130,6 +130,38 @@ PHP);
         }
     }
 
+    public function test_team_context_is_cleaned_to_the_workers_limits(): void
+    {
+        $directory = storage_path('framework/testing/codex-process-'.Str::uuid());
+        mkdir($directory, 0700, true);
+        file_put_contents($directory.'/fixture.php', <<<'PHP'
+<?php
+file_put_contents(__DIR__.'/payload.json', stream_get_contents(STDIN));
+echo json_encode(['type' => 'result', 'success' => false, 'error' => 'stopped'])."\n";
+PHP);
+        config(['mission.node_binary' => PHP_BINARY, 'mission.worker_path' => $directory.'/fixture.php']);
+        $settings = ['repository_path' => '/fixture/repository', 'base_branch' => 'main', 'test_command' => ['php', '-v'], 'max_runtime_seconds' => 60, 'max_tokens' => 1000];
+        $goal = Goal::factory()->create(['request' => str_repeat('g', 5100)]);
+        $lead = Lead::factory()->create(['name' => str_repeat('L', 150)]);
+        MissionTask::factory()->for($goal)->create(['goal_position' => 1, 'title' => "Ti\0tle".str_repeat('t', 250), 'lead_id' => $lead->id, 'recommendation' => "Sum\0mary", 'review_data' => ['diff' => ['files' => [str_repeat('p', 301), "bad\0file.php", '', 'good.php']]]]);
+        $own = MissionTask::factory()->for($goal)->create(['goal_position' => 2, 'status' => 'queued']);
+        $run = AgentRun::factory()->for($own, 'task')->create(['settings' => $settings]);
+
+        try {
+            app(CodexProcess::class)->run($run, fn (array $event) => null);
+            $payload = json_decode(file_get_contents($directory.'/payload.json'), true);
+            $this->assertSame(5000, mb_strlen($payload['goal']));
+            $mate = $payload['team'][0];
+            $this->assertSame(200, mb_strlen($mate['title']));
+            $this->assertStringStartsWith('Title', $mate['title']);
+            $this->assertSame(100, mb_strlen($mate['lead']));
+            $this->assertSame('Summary', $mate['summary']);
+            $this->assertSame(['good.php'], $mate['files']);
+        } finally {
+            File::deleteDirectory($directory);
+        }
+    }
+
     public function test_refresh_runs_send_the_reviewed_revision_and_summary_to_the_worker(): void
     {
         $directory = storage_path('framework/testing/codex-process-'.Str::uuid());

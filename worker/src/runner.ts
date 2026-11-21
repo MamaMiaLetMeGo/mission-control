@@ -161,7 +161,7 @@ export async function runMission(rawInput: MissionInput, options: RunOptions = {
           'A separate runner will commit your changes, execute the configured tests, and request an independent review.',
           'Finish with a concise summary of the change and any limitations. Do not claim screenshots or tests that were not produced.',
           ...(input.lead ? [`Lead instructions:\n${input.lead.instructions}`] : []),
-          ...(input.goal && team.length > 0 ? [`Goal this task belongs to:\n${input.goal}`] : []),
+          ...(input.goal ? [`Goal this task belongs to:\n${input.goal}`] : []),
           ...(team.length > 0 ? [[
             'Team context. Other sub-agents are working on these tasks under the same goal. Do not redo their work, and avoid editing the files they changed unless this task requires it:',
             ...team.map((mate) => `- [${mate.status}] ${mate.title} (${mate.lead})${mate.summary ? `: ${mate.summary}` : ''}${mate.files.length ? ` Files: ${mate.files.join(', ')}` : ''}`),

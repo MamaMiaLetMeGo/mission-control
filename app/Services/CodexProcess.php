@@ -44,13 +44,20 @@ class CodexProcess
             $payload['lead'] = ['name' => $task->lead->name, 'instructions' => $task->lead->instructions];
         }
         if ($task->goal && ($settings['mode'] ?? null) !== 'refresh') {
-            $payload['goal'] = $task->goal->request;
+            $clean = fn (mixed $value, int $max): string => mb_substr(str_replace("\0", '', (string) $value), 0, $max);
+            $goal = $clean($task->goal->request, 5000);
+            if (trim($goal) !== '') {
+                $payload['goal'] = $goal;
+            }
             $payload['team'] = $task->goal->tasks()->with('lead')->whereKeyNot($task->id)->limit(12)->get()->map(fn (MissionTask $teammate): array => [
-                'title' => $teammate->title,
-                'lead' => $teammate->lead?->name ?? 'Unassigned',
-                'status' => $teammate->status,
-                'summary' => mb_substr((string) $teammate->recommendation, 0, 600),
-                'files' => array_slice($teammate->review_data['diff']['files'] ?? [], 0, 30),
+                'title' => $clean($teammate->title, 200),
+                'lead' => $clean($teammate->lead?->name ?? 'Unassigned', 100),
+                'status' => $clean($teammate->status, 30),
+                'summary' => $clean($teammate->recommendation, 600),
+                'files' => array_slice(array_values(array_filter(
+                    (array) ($teammate->review_data['diff']['files'] ?? []),
+                    fn (mixed $file): bool => is_string($file) && $file !== '' && mb_strlen($file) <= 300 && ! str_contains($file, "\0"),
+                )), 0, 30),
             ])->all();
         }
         if (! empty($settings['model'])) {

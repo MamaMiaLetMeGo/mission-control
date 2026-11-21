@@ -465,3 +465,15 @@ test('more than 12 teammates or oversized fields are rejected', async (t) => {
   assert.throws(() => validateInput({ ...input, team: [{ ...mate, title: 'a\0b' }] }), message);
   assert.throws(() => validateInput({ ...input, goal: '' }), /goal/);
 });
+
+test('a goal without a team adds the goal block but no coordinate phase', async (t) => {
+  const { input } = await fixture(t);
+  const prompts = [];
+  const events = [];
+  const base = successfulAgent();
+  await runMission({ ...input, goal: 'Launch the signup flow', team: [] }, { agent: async (request) => { prompts.push(request); return base(request); }, emit: (event) => events.push(event) });
+  const implementation = prompts.find((request) => request.role === 'implementation').prompt;
+  assert.match(implementation, /Goal this task belongs to:\nLaunch the signup flow/);
+  assert.doesNotMatch(implementation, /Team context/);
+  assert.equal(events.some((event) => event.stage === 'coordinate'), false);
+});
