@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { command, git, safeEnvironment } from '../dist/process.js';
 import { runMission } from '../dist/runner.js';
@@ -130,27 +131,70 @@ test('requires an explicit API key and does not fall back to personal Codex auth
   assert.equal(result.worktreePath, '');
 });
 
-test('serializes concurrent work on one repository and releases the lock on completion', async (t) => {
+test('two tasks on one repository run at the same time', async (t) => {
   const { input } = await fixture(t);
-  let enterImplementation;
-  const entered = new Promise((resolve) => { enterImplementation = resolve; });
-  let resumeImplementation;
-  const resume = new Promise((resolve) => { resumeImplementation = resolve; });
+  const [first, second] = await Promise.all([
+    runMission({ ...input, taskId: 1 }, { agent: successfulAgent() }),
+    runMission({ ...input, taskId: 2 }, { agent: successfulAgent() }),
+  ]);
+  assert.equal(first.success, true, first.error);
+  assert.equal(second.success, true, second.error);
+  assert.notEqual(first.worktreePath, second.worktreePath);
+  assert.deepEqual(await readdir(path.join(input.worktreeRoot, '.locks')), []);
+});
+
+test('the same task cannot run twice at once', async (t) => {
+  const { input } = await fixture(t);
+  const slow = async (request) => { await new Promise((resolve) => setTimeout(resolve, 300)); return successfulAgent()(request); };
+  const [first, second] = await Promise.all([runMission(input, { agent: slow }), runMission(input, { agent: slow })]);
+  assert.equal([first, second].filter((result) => result.success).length, 1);
+  assert.match([first, second].find((result) => !result.success).error, /active worker lock/);
+});
+
+test('only the task lock with its owner file is held while the agent works', async (t) => {
+  const { input } = await fixture(t);
+  const lockRoot = path.join(input.worktreeRoot, '.locks');
+  let heldLocks;
+  let owner;
   const base = successfulAgent();
-  const first = runMission(input, { agent: async (request) => {
+  const result = await runMission({ ...input, taskId: 7 }, { agent: async (request) => {
     if (request.role === 'implementation') {
-      enterImplementation();
-      await resume;
+      heldLocks = await readdir(lockRoot);
+      owner = JSON.parse(await readFile(path.join(lockRoot, 'task-7', 'owner.json'), 'utf8'));
     }
     return base(request);
   } });
-  await entered;
-  const second = await runMission({ ...input, taskId: 2 }, { agent: successfulAgent() });
-  assert.equal(second.success, false);
-  assert.match(second.error, /active worker lock/);
-  resumeImplementation();
-  assert.equal((await first).success, true);
-  assert.deepEqual(await readdir(path.join(input.worktreeRoot, '.locks')), []);
+  assert.equal(result.success, true, result.error);
+  assert.deepEqual(heldLocks, ['task-7']);
+  assert.deepEqual(Object.keys(owner).sort(), ['pid', 'repositoryPath', 'startedAt', 'taskId']);
+  assert.equal(owner.taskId, 7);
+  assert.equal(owner.pid, process.pid);
+  assert.equal(owner.repositoryPath, await realpath(input.repositoryPath));
+  assert.deepEqual(await readdir(lockRoot), []);
+});
+
+test('a repository lock that is never released fails the run with its path and is left in place', async (t) => {
+  const { input } = await fixture(t);
+  const commonDirectory = await realpath(path.join(input.repositoryPath, '.git'));
+  const repositoryLock = path.join(input.worktreeRoot, '.locks', `repo-${createHash('sha256').update(commonDirectory).digest('hex')}`);
+  await mkdir(repositoryLock, { recursive: true });
+  const result = await runMission(input, { agent: successfulAgent(), repositoryLockTimeoutMs: 600 });
+  assert.equal(result.success, false);
+  assert.ok(result.error.includes(repositoryLock), result.error);
+  assert.deepEqual(await readdir(path.join(input.worktreeRoot, '.locks')), [path.basename(repositoryLock)]);
+});
+
+test('aborting while waiting for the repository lock releases the task lock', async (t) => {
+  const { input } = await fixture(t);
+  const commonDirectory = await realpath(path.join(input.repositoryPath, '.git'));
+  const repositoryLock = path.join(input.worktreeRoot, '.locks', `repo-${createHash('sha256').update(commonDirectory).digest('hex')}`);
+  await mkdir(repositoryLock, { recursive: true });
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(new Error('test cancellation')), 300);
+  const result = await runMission(input, { agent: successfulAgent(), signal: controller.signal });
+  assert.equal(result.success, false);
+  assert.match(result.error, /test cancellation/);
+  assert.deepEqual(await readdir(path.join(input.worktreeRoot, '.locks')), [path.basename(repositoryLock)]);
 });
 
 test('stops before the next agent when a completed turn exceeds the soft token allowance', async (t) => {

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { createCodexAgent } from './agents.js';
@@ -10,6 +11,9 @@ import { startPreview, capturePreview, stopPreview, type PreviewRequest } from '
 
 const require = createRequire(import.meta.url);
 const codexEntrypoint = path.join(path.dirname(require.resolve('@openai/codex/package.json')), 'bin/codex.js');
+
+const repositoryLockRetryMs = 250;
+const repositoryLockTimeoutMs = 30_000;
 
 const reviewSchema = {
   type: 'object',
@@ -35,6 +39,8 @@ export interface RunOptions {
   emit?: Emit;
   agent?: AgentRunner;
   signal?: AbortSignal;
+  /** How long to wait for another run to finish creating its worktree. Defaults to 30 seconds. */
+  repositoryLockTimeoutMs?: number;
 }
 
 function addUsage(total: TokenUsage, next: TokenUsage): void {
@@ -47,8 +53,8 @@ export async function runMission(rawInput: MissionInput, options: RunOptions = {
   const result = initialResult(Array.isArray(rawInput?.testCommand) ? rawInput.testCommand : []);
   const secret = options.apiKey || '';
   const emit: Emit = (event) => options.emit?.(JSON.parse(redact(JSON.stringify(event), secret)));
-  let lockPath: string | undefined;
-  let ownedLock = false;
+  let taskLockPath: string | undefined;
+  let repositoryLockPath: string | undefined;
   let previewTask: { taskId: number; previewRoot: string } | undefined;
   try {
     const input = validateInput(rawInput);
@@ -77,14 +83,14 @@ export async function runMission(rawInput: MissionInput, options: RunOptions = {
     const commonDirectory = await realpath(path.resolve(repositoryPath, await git(['rev-parse', '--git-common-dir'], repositoryPath, environment, signal)));
     const lockRoot = path.join(worktreeRoot, '.locks');
     await mkdir(lockRoot, { recursive: true, mode: 0o700 });
-    lockPath = path.join(lockRoot, createHash('sha256').update(commonDirectory).digest('hex'));
+    const candidateTaskLock = path.join(lockRoot, `task-${input.taskId}`);
     try {
-      await mkdir(lockPath, { mode: 0o700 });
-      ownedLock = true;
-      await writeFile(path.join(lockPath, 'owner.json'), JSON.stringify({ taskId: input.taskId, pid: process.pid, startedAt: new Date().toISOString(), repositoryPath }), { mode: 0o600 });
+      await mkdir(candidateTaskLock, { mode: 0o700 });
+      taskLockPath = candidateTaskLock;
+      await writeFile(path.join(taskLockPath, 'owner.json'), JSON.stringify({ taskId: input.taskId, pid: process.pid, startedAt: new Date().toISOString(), repositoryPath }), { mode: 0o600 });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-        throw new Error('This repository has an active worker lock. If a previous process crashed, recover the task before removing its lock.');
+        throw new Error('This task has an active worker lock. If a previous process crashed, recover the task before removing its lock.');
       }
       throw error;
     }
@@ -95,7 +101,16 @@ export async function runMission(rawInput: MissionInput, options: RunOptions = {
     await mkdir(result.artifactPath, { mode: 0o700 });
     result.baseRevision = await git(['rev-parse', '--verify', '--end-of-options', `refs/heads/${input.baseBranch}^{commit}`], repositoryPath, environment, signal);
     emit({ type: 'phase', message: 'Creating an isolated worktree from the committed base revision.' });
-    await git(['worktree', 'add', '-b', result.branch, result.worktreePath, result.baseRevision], repositoryPath, environment, signal);
+    repositoryLockPath = await acquireRepositoryLock(
+      path.join(lockRoot, `repo-${createHash('sha256').update(commonDirectory).digest('hex')}`),
+      options.repositoryLockTimeoutMs ?? repositoryLockTimeoutMs, signal,
+    );
+    try {
+      await git(['worktree', 'add', '-b', result.branch, result.worktreePath, result.baseRevision], repositoryPath, environment, signal);
+    } finally {
+      await rm(repositoryLockPath, { recursive: true, force: true });
+      repositoryLockPath = undefined;
+    }
     result.browser = { status: input.preview?.enabled ? 'failed' : 'skipped', revision: '', baseRevision: result.baseRevision, screenshots: [] };
     const previewRequest = (phase: 'before' | 'after'): PreviewRequest => ({
       taskId: input.taskId, revision: phase === 'before' ? result.baseRevision : result.revision,
@@ -224,11 +239,42 @@ export async function runMission(rawInput: MissionInput, options: RunOptions = {
         result.error = `${result.error ? result.error + ' ' : ''}Could not save the final evidence package.`;
       }
     }
-    if (ownedLock && lockPath) {
-      await rm(lockPath, { recursive: true, force: true });
+    if (repositoryLockPath) {
+      await rm(repositoryLockPath, { recursive: true, force: true });
+    }
+    if (taskLockPath) {
+      await rm(taskLockPath, { recursive: true, force: true });
     }
   }
   return result;
+}
+
+/**
+ * Takes the per-repository lock that serialises `git worktree add`, retrying every 250 ms.
+ * A lock still held after the timeout is reported with its path and never removed, since it may belong to a live process.
+ */
+async function acquireRepositoryLock(lockPath: string, timeoutMs: number, signal: AbortSignal): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    signal.throwIfAborted();
+    try {
+      await mkdir(lockPath, { mode: 0o700 });
+      return lockPath;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw error;
+      }
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`Another worker has held the repository lock for over ${Math.round(timeoutMs / 1000)} seconds while creating a worktree. If no worker is creating a worktree for this repository, remove ${lockPath} and retry.`);
+    }
+    try {
+      await delay(Math.min(repositoryLockRetryMs, Math.max(0, deadline - Date.now())), undefined, { signal });
+    } catch (error) {
+      signal.throwIfAborted();
+      throw error;
+    }
+  }
 }
 
 function enforceTokenLimit(usage: TokenUsage, limit: number): void {
