@@ -580,6 +580,9 @@ test('a fix round that changes nothing fails with the findings unresolved', asyn
   assert.equal(result.success, false);
   assert.equal(result.error, 'The fix round produced no changes, so the reviewer\'s findings remain.');
   assert.equal(result.reviewRounds, 1);
+  assert.equal(result.review.summary, 'Independent review has not completed.');
+  assert.deepEqual(result.reviewHistory.map((review) => review.summary), ['Fix it.']);
+  assert.ok(!(await readdir(result.artifactPath)).includes('review.json'));
 });
 
 test('a fix round that adds an environment file is not committed', async (t) => {
@@ -642,4 +645,57 @@ test('reviewRounds must be an integer from 0 to 3', async (t) => {
   assert.match(result.error, /reviewRounds/);
   assert.equal(result.reviewRounds, 0);
   assert.deepEqual(result.reviewHistory, []);
+});
+
+test('a fix round whose tests fail leaves no stale review and names the new single commit', async (t) => {
+  const { input, environment } = await fixture(t);
+  input.testCommand = [process.execPath, '-e', 'process.exit(require("node:fs").existsSync("broken.txt") ? 3 : 0)'];
+  const result = await runMission({ ...input, reviewRounds: 1 }, { agent: scriptedAgent({
+    implementations: [
+      async (directory) => { await writeFile(path.join(directory, 'feature.txt'), 'implemented\n'); return { response: 'Done.', usage: emptyUsage() }; },
+      async (directory) => { await writeFile(path.join(directory, 'broken.txt'), 'oops\n'); return { response: 'Fixed.', usage: emptyUsage() }; },
+    ],
+    reviews: [changesRequested('Fix it.', ['Broken.'])],
+  }) });
+  assert.equal(result.success, false);
+  assert.match(result.error, /tests failed/);
+  assert.equal(result.tests.exitCode, 3);
+  assert.equal(result.review.summary, 'Independent review has not completed.');
+  assert.ok(!(await readdir(result.artifactPath)).includes('review.json'));
+  assert.deepEqual(result.reviewHistory, [{ verdict: 'changes_requested', summary: 'Fix it.', findings: ['Broken.'] }]);
+  assert.equal(await git(['rev-parse', 'HEAD'], result.worktreePath, environment), result.revision);
+  assert.equal(await git(['rev-list', '--count', `${result.baseRevision}..${result.revision}`], result.worktreePath, environment), '1');
+  assert.match(await readFile(path.join(result.artifactPath, 'diff.patch'), 'utf8'), /broken\.txt/);
+});
+
+test('a fix round that commits on its own fails without naming a revision', async (t) => {
+  const { input, environment } = await fixture(t);
+  const result = await runMission({ ...input, reviewRounds: 1 }, { agent: scriptedAgent({
+    implementations: [
+      async (directory) => { await writeFile(path.join(directory, 'feature.txt'), 'implemented\n'); return { response: 'Done.', usage: emptyUsage() }; },
+      async (directory) => {
+        await writeFile(path.join(directory, 'feature.txt'), 'fixed\n');
+        await git(['-c', 'user.name=Agent', '-c', 'user.email=agent@localhost', 'commit', '--no-gpg-sign', '-am', 'Sneaky'], directory, environment);
+        return { response: 'Fixed.', usage: emptyUsage() };
+      },
+    ],
+    reviews: [changesRequested('Fix it.', ['Broken.'])],
+  }) });
+  assert.equal(result.success, false);
+  assert.match(result.error, /changed Git history/);
+  assert.equal(result.revision, '');
+  assert.equal(result.browser.revision, '');
+});
+
+test('a rejected review without findings points the fix at the reviewer summary', async (t) => {
+  const { input } = await fixture(t);
+  const requests = [];
+  await runMission({ ...input, reviewRounds: 1 }, { agent: scriptedAgent({
+    implementations: [
+      async (directory) => { await writeFile(path.join(directory, 'feature.txt'), 'implemented\n'); return { response: 'Done.', usage: emptyUsage() }; },
+      async (directory) => { await writeFile(path.join(directory, 'feature.txt'), 'fixed\n'); return { response: 'Fixed.', usage: emptyUsage() }; },
+    ],
+    reviews: [changesRequested('Rename the file.', []), passed()],
+  }, requests) });
+  assert.match(requests.filter((request) => request.role === 'implementation')[1].prompt, /Findings:\n- See the reviewer summary\.\n\n/);
 });

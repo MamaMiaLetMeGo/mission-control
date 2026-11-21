@@ -159,6 +159,15 @@ class MissionTaskControllerTest extends TestCase
         $this->get(route('tasks.show', $direct))->assertOk()->assertDontSee('fixed reviewer findings');
     }
 
+    public function test_the_fix_count_shows_for_a_final_rejection_but_not_when_the_last_review_never_completed(): void
+    {
+        $rejected = MissionTask::factory()->readyForReview()->create(['review_data' => ['success' => false, 'reviewRounds' => 1, 'error' => 'The independent reviewer requested changes.', 'tests' => ['exitCode' => 0], 'review' => ['verdict' => 'changes_requested', 'summary' => 'Still wrong.', 'findings' => ['Wrong.']]]]);
+        $unfinished = MissionTask::factory()->readyForReview()->create(['review_data' => ['success' => false, 'reviewRounds' => 1, 'error' => 'The configured tests failed (exit 3).', 'tests' => ['exitCode' => 3], 'review' => ['verdict' => 'changes_requested', 'summary' => 'Independent review has not completed.', 'findings' => []]]]);
+
+        $this->get(route('tasks.show', $rejected))->assertOk()->assertSee('The sub-agent fixed reviewer findings 1 time(s) before this review.');
+        $this->get(route('tasks.show', $unfinished))->assertOk()->assertDontSee('fixed reviewer findings');
+    }
+
     public function test_approval_requires_passing_tests_and_independent_review(): void
     {
         $task = MissionTask::factory()->readyForReview()->create(['review_data' => ['success' => true, 'tests' => ['exitCode' => 1], 'review' => ['verdict' => 'pass']]]);

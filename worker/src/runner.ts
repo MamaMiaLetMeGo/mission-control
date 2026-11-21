@@ -326,7 +326,8 @@ async function runVerificationRound({ input, result, agent, emit, secret, enviro
 
 /**
  * Has the implementation agent fix the findings of the rejected review in `result.review`, in the same worktree.
- * Keeps that review as `review-round-<n>.json`, retires the round's preview and after screenshots, then folds the fix into the
+ * Moves that review to `reviewHistory` and `review-round-<n>.json`, leaving `result.review` as the not-completed placeholder until
+ * the next round's review, retires the round's preview and after screenshots, then folds the fix into the
  * staged change on top of the base so the next verification round commits the whole change as one commit again.
  */
 async function fixReviewFindings({ input, result, agent, emit, secret, environment, signal, previewTask }: RoundContext, fixRounds: number): Promise<void> {
@@ -334,6 +335,8 @@ async function fixReviewFindings({ input, result, agent, emit, secret, environme
   result.reviewHistory.push(rejected);
   result.reviewRounds++;
   await writeFile(path.join(result.artifactPath, `review-round-${result.reviewHistory.length}.json`), JSON.stringify(rejected, null, 2) + '\n', { mode: 0o600 });
+  result.review = initialResult().review;
+  await rm(path.join(result.artifactPath, 'review.json'), { force: true });
   emit({ type: 'phase', role: 'implementation', stage: 'chase', message: `Fixing the reviewer's findings (round ${result.reviewRounds} of ${fixRounds}).` });
   const browser = result.browser!;
   if (result.preview && previewTask) {
@@ -351,7 +354,7 @@ async function fixReviewFindings({ input, result, agent, emit, secret, environme
       ...implementationPreamble(input),
       'An independent reviewer requested changes to the work already in this worktree. Fix every finding below, and nothing else.',
       `Reviewer summary:\n${rejected.summary}`,
-      `Findings:\n${rejected.findings.map((finding) => `- ${finding}`).join('\n')}`,
+      `Findings:\n${rejected.findings.length ? rejected.findings.map((finding) => `- ${finding}`).join('\n') : '- See the reviewer summary.'}`,
       'Finish with a concise summary of the whole change as it now stands.',
       ...(input.lead ? [`Lead instructions:\n${input.lead.instructions}`] : []),
       `Task title: ${input.title}`,
@@ -364,6 +367,8 @@ async function fixReviewFindings({ input, result, agent, emit, secret, environme
   enforceTokenLimit(result.usage, input.maxTokens);
   if (await git(['rev-parse', 'HEAD'], result.worktreePath, environment, signal) !== result.revision
     || await git(['branch', '--show-current'], result.worktreePath, environment, signal) !== result.branch) {
+    result.revision = '';
+    browser.revision = '';
     throw new Error('The implementation changed Git history or switched branches. The run cannot be approved.');
   }
   await git(['add', '--all'], result.worktreePath, environment, signal);
