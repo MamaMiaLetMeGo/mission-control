@@ -71,6 +71,21 @@ class MissionTaskControllerTest extends TestCase
         Queue::assertPushed(RunMissionTask::class, fn (RunMissionTask $job): bool => $job->runId === $run->id);
     }
 
+    public function test_the_run_is_recorded_under_the_tasks_lead(): void
+    {
+        Queue::fake([RunMissionTask::class]);
+        $this->readyEnvironment();
+        $this->mock(GitRepository::class, function ($mock): void {
+            $mock->shouldReceive('command')->andReturn(base_path(), str_repeat('a', 40));
+            $mock->shouldReceive('remoteSnapshot')->andReturn(['ref' => 'refs/remotes/origin/main', 'revision' => str_repeat('a', 40)]);
+        });
+        $task = MissionTask::factory()->for(Lead::query()->where('key', 'design')->firstOrFail())->create();
+
+        $this->post(route('tasks.run', $task))->assertRedirect(route('tasks.show', $task));
+
+        $this->assertSame('design', $task->runs()->sole()->role);
+    }
+
     public function test_missing_credentials_do_not_queue_a_task(): void
     {
         Queue::fake();

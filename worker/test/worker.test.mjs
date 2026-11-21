@@ -213,3 +213,29 @@ test('aborting a command stops its process and rejects without a success result'
   controller.abort(new Error('test cancellation'));
   await assert.rejects(running, /test cancellation/);
 });
+
+test('the implementation prompt carries the lead and its instructions', async (t) => {
+  const { input } = await fixture(t);
+  const prompts = [];
+  const base = successfulAgent();
+  const result = await runMission({ ...input, lead: { name: 'Design Lead', instructions: 'Prefer existing components.' } }, { agent: async (request) => { prompts.push(request); return base(request); } });
+  assert.equal(result.success, true);
+  const implementation = prompts.find((request) => request.role === 'implementation').prompt;
+  assert.match(implementation, /You are a sub-agent working for the Design Lead\./);
+  assert.match(implementation, /Lead instructions:\nPrefer existing components\./);
+  assert.doesNotMatch(prompts.find((request) => request.role === 'review').prompt, /Prefer existing components/);
+});
+
+test('a lead with empty instructions is rejected', async (t) => {
+  const { input } = await fixture(t);
+  const result = await runMission({ ...input, lead: { name: 'Design Lead', instructions: '' } }, { agent: successfulAgent() });
+  assert.match(result.error, /lead/i);
+});
+
+test('phase events are tagged with the code, test and review stages in order', async (t) => {
+  const { input } = await fixture(t);
+  const events = [];
+  const result = await runMission(input, { agent: successfulAgent(), emit: (event) => events.push(event) });
+  assert.equal(result.success, true);
+  assert.deepEqual(events.filter((event) => event.stage).map((event) => event.stage), ['code', 'test', 'review']);
+});

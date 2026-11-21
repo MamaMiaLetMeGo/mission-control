@@ -37,6 +37,9 @@ class CodexProcess
             'previewRoot' => config('mission.preview_root'),
             'previewDatabase' => config('mission.preview_database'),
         ];
+        if ($task->lead) {
+            $payload['lead'] = ['name' => $task->lead->name, 'instructions' => $task->lead->instructions];
+        }
         if (! empty($settings['model'])) {
             $payload['model'] = $settings['model'];
         }

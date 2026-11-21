@@ -114,17 +114,20 @@ export async function runMission(rawInput: MissionInput, options: RunOptions = {
       }
     }
     const agent = options.agent || createCodexAgent(secret, runtimeHome, emit);
-    emit({ type: 'phase', role: 'implementation', message: 'Implementing the task in its isolated worktree.' });
+    emit({ type: 'phase', role: 'implementation', stage: 'code', message: 'Implementing the task in its isolated worktree.' });
     const implementation = await agent({
       role: 'implementation', workingDirectory: result.worktreePath, model: input.model, signal,
       prompt: [
-        'You are the engineering worker for Mission Control. Implement the task below in this worktree only.',
+        input.lead
+          ? `You are a sub-agent working for the ${input.lead.name}. Implement the task below in this worktree only.`
+          : 'You are the engineering worker for Mission Control. Implement the task below in this worktree only.',
         'Read the repository instructions. Make a bounded, reviewable change that meets the acceptance criteria.',
         'Do not commit, switch branches, merge, fetch, push, deploy, delete worktrees, or modify Git configuration.',
         'Do not read secrets or copy environment files from another checkout. Do not access the source checkout.',
         'Network access is disabled. Dependencies may be absent; report this honestly instead of fabricating verification.',
         'A separate runner will commit your changes, execute the configured tests, and request an independent review.',
         'Finish with a concise summary of the change and any limitations. Do not claim screenshots or tests that were not produced.',
+        ...(input.lead ? [`Lead instructions:\n${input.lead.instructions}`] : []),
         `Task title: ${input.title}`,
         `Request:\n${input.request}`,
         `Acceptance criteria:\n${input.acceptanceCriteria}`,
@@ -163,7 +166,7 @@ export async function runMission(rawInput: MissionInput, options: RunOptions = {
       await assertStableRevision(result, environment, signal);
       await writeFile(path.join(result.artifactPath, 'browser.json'), JSON.stringify(result.browser, null, 2) + '\n', { mode: 0o600 });
     }
-    emit({ type: 'phase', message: 'Running the configured tests against the committed revision.' });
+    emit({ type: 'phase', stage: 'test', message: 'Running the configured tests against the committed revision.' });
     const testResult = await command([
       process.execPath, codexEntrypoint, 'sandbox', '-c', 'sandbox_mode="workspace-write"',
       '-c', 'sandbox_workspace_write.network_access=false', '--', ...input.testCommand,
@@ -174,7 +177,7 @@ export async function runMission(rawInput: MissionInput, options: RunOptions = {
     if (result.tests.exitCode !== 0) {
       throw new Error(`The configured tests failed (exit ${result.tests.exitCode}). Review tests.txt; dependencies may need to be installed in this worktree.`);
     }
-    emit({ type: 'phase', role: 'review', message: 'An independent read-only agent is reviewing the tested revision.' });
+    emit({ type: 'phase', role: 'review', stage: 'review', message: 'An independent read-only agent is reviewing the tested revision.' });
     const review = await agent({
       role: 'review', workingDirectory: result.worktreePath, model: input.model, signal, outputSchema: reviewSchema,
       images: result.browser.screenshots.map((screenshot) => path.join(result.artifactPath, screenshot.file)),

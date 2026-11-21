@@ -19,6 +19,7 @@ export interface MissionInput {
   preview?: PreviewConfig;
   previewRoot?: string;
   previewDatabase?: PreviewDatabase;
+  lead?: { name: string; instructions: string };
 }
 
 export interface TokenUsage {
@@ -32,6 +33,7 @@ export interface TokenUsage {
 export interface WorkerEvent {
   type: 'phase' | 'thread' | 'usage' | 'message';
   role?: Role;
+  stage?: 'code' | 'test' | 'review';
   message?: string;
   threadId?: string;
   usage?: TokenUsage;

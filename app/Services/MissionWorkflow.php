@@ -43,7 +43,7 @@ class MissionWorkflow
             $this->previews->stop($task);
             DB::transaction(function () use ($task, $settings): void {
                 $task->update(['status' => 'queued', 'error' => null, 'recommendation' => null, 'review_data' => null, 'revision' => null, 'base_revision' => null, 'branch' => null, 'worktree_path' => null, 'artifact_path' => null]);
-                $run = $task->runs()->create(['role' => 'engineering', 'status' => 'queued', 'settings' => $settings, 'events' => []]);
+                $run = $task->runs()->create(['role' => $task->lead?->key ?? 'engineering', 'status' => 'queued', 'settings' => $settings, 'events' => []]);
                 RunMissionTask::dispatch($run->id)->afterCommit();
             });
         });
