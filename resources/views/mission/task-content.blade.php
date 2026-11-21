@@ -33,7 +33,7 @@
 <div data-task-content data-run-id="{{ $latestRun?->id ?? '' }}" data-task-status="{{ $task->status }}" data-revision="{{ $task->revision ?? '' }}">
 <a href="{{ route('dashboard') }}" class="text-link text-muted mb-7">@include('mission.icon', ['name' => 'back', 'class' => 'size-4'])Back to queue</a>
 <div class="page-heading items-start" data-task-live="heading">
-    <div class="min-w-0"><div class="flex flex-wrap items-center gap-3 mb-3"><p class="eyebrow mb-0">MC-{{ str_pad((string) $task->id, 3, '0', STR_PAD_LEFT) }}</p><span class="status-badge status-{{ $task->status }}">{{ $statusLabels[$task->status] ?? ucfirst($task->status) }}</span></div><h1 class="task-page-title">{{ $task->title }}</h1><p class="page-description">{{ ucfirst($task->area) }} <span class="px-1 text-line">/</span> {{ ucfirst($task->priority) }} priority <span class="px-1 text-line">/</span> Added {{ $task->created_at->diffForHumans() }}</p></div>
+    <div class="min-w-0"><div class="flex flex-wrap items-center gap-3 mb-3"><p class="eyebrow mb-0">MC-{{ str_pad((string) $task->id, 3, '0', STR_PAD_LEFT) }}</p><span class="status-badge status-{{ $task->status }}">{{ $statusLabels[$task->status] ?? ucfirst($task->status) }}</span></div><h1 class="task-page-title">{{ $task->title }}</h1><p class="page-description">{{ $task->lead?->name ?? 'Unassigned' }} <span class="px-1 text-line">/</span> {{ ucfirst($task->priority) }} priority <span class="px-1 text-line">/</span> Added {{ $task->created_at->diffForHumans() }}</p></div>
     @if(in_array($task->status, ['queued', 'running']))<a href="{{ route('tasks.show', $task) }}" class="button button-secondary shrink-0">@include('mission.icon', ['name' => 'refresh', 'class' => 'size-4'])Refresh status</a>@endif
 </div>
 <div data-task-live="phase">
@@ -199,7 +199,7 @@ No run events recorded.
                 @endif
             </div>
         </section>
-        <section class="panel"><div class="panel-heading"><h2>Task details</h2></div><dl class="detail-list"><div><dt>Accountable lead</dt><dd>Engineering</dd></div><div><dt>Focus area</dt><dd>{{ ucfirst($task->area) }}</dd></div><div><dt>Priority</dt><dd>{{ ucfirst($task->priority) }}</dd></div><div><dt>Created</dt><dd>{{ $task->created_at->format('M j, Y') }}</dd></div>@if($task->branch)<div class="flex-col items-start"><dt>Task branch</dt><dd class="break-all text-xs font-mono mt-1">{{ $task->branch }}</dd></div>@endif</dl></section>
+        <section class="panel"><div class="panel-heading"><h2>Task details</h2></div><dl class="detail-list"><div><dt>Accountable lead</dt><dd>{{ $task->lead?->name ?? 'Unassigned' }}</dd></div><div><dt>Priority</dt><dd>{{ ucfirst($task->priority) }}</dd></div><div><dt>Created</dt><dd>{{ $task->created_at->format('M j, Y') }}</dd></div>@if($task->branch)<div class="flex-col items-start"><dt>Task branch</dt><dd class="break-all text-xs font-mono mt-1">{{ $task->branch }}</dd></div>@endif</dl></section>
     </aside>
 </div>
 </div>

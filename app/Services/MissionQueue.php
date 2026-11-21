@@ -13,11 +13,12 @@ class MissionQueue
      */
     public function data(array $filters): array
     {
-        $query = MissionTask::query()->select(['id', 'title', 'area', 'priority', 'status', 'created_at'])->withCount(['runs', 'decisions']);
-        foreach (['status', 'area'] as $filter) {
-            if (! empty($filters[$filter])) {
-                $query->where($filter, $filters[$filter]);
-            }
+        $query = MissionTask::query()->select(['id', 'title', 'lead_id', 'priority', 'status', 'created_at'])->with('lead:id,key,name')->withCount(['runs', 'decisions']);
+        if (! empty($filters['status'])) {
+            $query->where('status', $filters['status']);
+        }
+        if (! empty($filters['lead'])) {
+            $query->whereHas('lead', fn ($lead) => $lead->where('key', $filters['lead']));
         }
         if (! empty($filters['q'])) {
             $query->where('title', 'like', '%'.$filters['q'].'%');

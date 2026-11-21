@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Lead;
 use App\Models\MissionTask;
 use App\Services\BrowserEvidence;
 use App\Services\MissionPreview;
@@ -11,6 +12,7 @@ use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -21,13 +23,17 @@ class MissionTaskController extends Controller
 {
     public function store(Request $request): RedirectResponse
     {
-        $task = MissionTask::query()->create($request->validate([
+        $data = $request->validate([
             'title' => ['required', 'string', 'max:200'],
             'request' => ['required', 'string', 'max:20000'],
             'acceptance_criteria' => ['required', 'string', 'max:10000'],
-            'area' => ['required', Rule::in(MissionTask::AREAS)],
+            'lead' => ['required', 'string', Rule::exists('leads', 'key')->where('is_active', true)],
             'priority' => ['required', Rule::in(MissionTask::PRIORITIES)],
-        ]));
+        ]);
+        $task = MissionTask::query()->create([
+            ...Arr::except($data, ['lead']),
+            'lead_id' => Lead::query()->where('key', $data['lead'])->value('id'),
+        ]);
 
         return to_route('tasks.show', $task)->with('status', 'Task added to the backlog.');
     }

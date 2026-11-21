@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Jobs\RunMissionTask;
 use App\Models\AgentRun;
 use App\Models\Decision;
+use App\Models\Lead;
 use App\Models\MissionTask;
 use App\Services\GitRepository;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
@@ -18,7 +19,7 @@ class MissionTaskControllerTest extends TestCase
     public function test_creates_a_backlog_task_without_accepting_a_client_status(): void
     {
         Queue::fake();
-        $payload = MissionTask::factory()->raw(['title' => 'Improve lesson controls', 'status' => 'approved']);
+        $payload = MissionTask::factory()->raw(['title' => 'Improve lesson controls', 'status' => 'approved']) + ['lead' => 'engineering'];
 
         $response = $this->post(route('tasks.store'), $payload);
 
@@ -29,11 +30,23 @@ class MissionTaskControllerTest extends TestCase
         Queue::assertNothingPushed();
     }
 
+    public function test_a_task_is_created_for_the_chosen_lead(): void
+    {
+        $this->post(route('tasks.store'), ['title' => 'T', 'request' => 'R', 'acceptance_criteria' => 'A', 'lead' => 'design', 'priority' => 'normal'])->assertRedirect();
+        $this->assertSame('design', MissionTask::query()->sole()->lead->key);
+    }
+
+    public function test_a_deactivated_lead_cannot_receive_new_tasks(): void
+    {
+        Lead::query()->where('key', 'design')->update(['is_active' => false]);
+        $this->post(route('tasks.store'), ['title' => 'T', 'request' => 'R', 'acceptance_criteria' => 'A', 'lead' => 'design', 'priority' => 'normal'])->assertSessionHasErrors('lead');
+    }
+
     public function test_requires_a_request_and_acceptance_criteria(): void
     {
         $response = $this->post(route('tasks.store'), []);
 
-        $response->assertSessionHasErrors(['title', 'request', 'acceptance_criteria', 'area', 'priority']);
+        $response->assertSessionHasErrors(['title', 'request', 'acceptance_criteria', 'lead', 'priority']);
         $this->assertDatabaseCount('mission_tasks', 0);
     }
 

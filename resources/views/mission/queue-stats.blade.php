@@ -1,6 +1,5 @@
 @php
     $statusLabels = ['backlog' => 'Backlog', 'queued' => 'Queued', 'running' => 'In progress', 'review' => 'Needs review', 'approved' => 'Approved', 'merged' => 'Merged locally', 'changes_requested' => 'Changes requested', 'deferred' => 'Deferred', 'rejected' => 'Rejected', 'failed' => 'Needs attention'];
-    $areaLabels = ['engineering' => 'Engineering', 'content' => 'Learning & audio', 'quality' => 'Quality', 'growth' => 'Growth'];
     $reviewCount = $counts['review'] ?? 0;
     $activeCount = $counts['running'] ?? 0;
 @endphp
