@@ -82,6 +82,7 @@ test('the planning prompt has no preferences block without preferences', async (
 for (const [name, preferences] of [
   ['21 items', Array.from({ length: 21 }, () => ({ text: 'Short.', lead: null }))],
   ['a multi-line item', [{ text: 'one\ntwo', lead: null }]],
+  ['a zero-width joiner in an item', [{ text: 'one\u200Dtwo', lead: null }]],
   ['a 301-character item', [{ text: 'a'.repeat(301), lead: null }]],
   ['an unlisted lead', [{ text: 'Short.', lead: 'ghost' }]],
   ['a missing lead', [{ text: 'Short.' }]],

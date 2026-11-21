@@ -15,7 +15,7 @@ return new class extends Migration
             $table->string('status')->default('active');
             $table->string('source')->default('manual');
             $table->json('evidence')->nullable();
-            $table->string('note')->nullable();
+            $table->string('note', 300)->nullable();
             $table->timestamp('seen_at')->nullable();
             $table->timestamps();
             $table->index('status');

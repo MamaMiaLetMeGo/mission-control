@@ -32,6 +32,14 @@ class BrainTest extends TestCase
         $this->assertSame(str_repeat('a', 299), $brain->clean(str_repeat('a', 299).' b'));
     }
 
+    public function test_clean_removes_zero_width_and_bidi_format_characters(): void
+    {
+        $brain = app(Brain::class);
+
+        $this->assertSame('Use tabs always.', $brain->clean("Use\u{200B} ta\u{200D}bs \u{202E}always\u{2066}.\u{FEFF}"));
+        $this->assertSame('', $brain->clean("\u{200B}\u{202E}"));
+    }
+
     public function test_for_prompt_returns_global_and_the_leads_own_preferences_only(): void
     {
         $lead = Lead::factory()->create();

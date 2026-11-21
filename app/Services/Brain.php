@@ -27,11 +27,12 @@ class Brain
     public function __construct(private MissionSettings $settings, private TokenBudget $tokens) {}
 
     /**
-     * Make a preference safe to place in a prompt: one line, no control characters, at most 300 characters.
+     * Make a preference safe to place in a prompt: one line, no control or invisible format characters, at most 300 characters.
      */
     public function clean(string $text): string
     {
         $text = preg_replace('/[\x00-\x1F\x7F\x{0085}\x{2028}\x{2029}]/u', ' ', $text) ?? '';
+        $text = preg_replace('/\p{Cf}/u', '', $text) ?? '';
         $text = preg_replace('/[\s\p{Z}]+/u', ' ', $text) ?? '';
 
         return trim(mb_substr(trim($text), 0, 300));

@@ -5,7 +5,7 @@ import { createCodexAgent } from './agents.js';
 import { safeEnvironment } from './process.js';
 import { addUsage, enforceTokenLimit, type RunOptions } from './runner.js';
 import { emptyUsage, type Emit, type TokenUsage } from './types.js';
-import { codePoints, redact } from './validation.js';
+import { codePoints, hasControlCharacters, redact } from './validation.js';
 
 export interface LearnLead {
   key: string;
@@ -60,7 +60,6 @@ export interface LearnResult {
 
 const actions: DecisionAction[] = ['approve', 'request_changes', 'defer', 'reject'];
 const ops = ['add', 'update', 'retire'];
-const controlCharacters = /[\u0000-\u001F\u007F\u0085\u2028\u2029]/;
 
 const nullable = (schema: Record<string, unknown>) => ({ anyOf: [schema, { type: 'null' }] });
 
@@ -94,8 +93,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function checkedText(value: unknown, name: string, min: number, max: number): string {
-  if (typeof value !== 'string' || value.includes('\0') || codePoints(value) > max || (min > 0 && !value.trim())) {
-    throw new Error(`${name} must be ${min === 0 ? 'at most' : `1 to`} ${max} characters.`);
+  if (typeof value !== 'string' || hasControlCharacters(value) || codePoints(value) > max || (min > 0 && !value.trim())) {
+    throw new Error(`${name} must be one line of ${min === 0 ? 'at most' : `1 to`} ${max} characters.`);
   }
   return value;
 }
@@ -195,7 +194,7 @@ export function validateLearnInput(value: unknown): LearnInput {
 }
 
 function oneLine(value: unknown, name: string, max: number): string {
-  if (typeof value !== 'string' || !value.trim() || codePoints(value) > max || controlCharacters.test(value)) {
+  if (typeof value !== 'string' || !value.trim() || codePoints(value) > max || hasControlCharacters(value)) {
     throw new Error(`${name} must be one line of 1 to ${max} characters`);
   }
   return value;
@@ -280,7 +279,11 @@ function learningPrompt(input: LearnInput): string {
     input.preferences.length
       ? `Learned preferences you may update or retire:\n${input.preferences.map((preference) => `- #${preference.id} [${leadName(preference.lead, 'all leads')}] ${preference.text}`).join('\n')}`
       : 'Learned preferences: none yet.',
-    `Decisions:\n${input.decisions.map((decision) => `- #${decision.id} ${decision.action} on "${decision.task}" (${leadName(decision.lead, 'no lead')}): ${decision.feedback}${decision.summary ? ` Review summary: ${decision.summary}` : ''}`).join('\n')}`,
+    `Decisions:\n${input.decisions.map((decision) => [
+      `- #${decision.id} ${decision.action} on task ${JSON.stringify(decision.task)} (${leadName(decision.lead, 'no lead')})`,
+      `  Owner feedback: ${JSON.stringify(decision.feedback)}`,
+      ...(decision.summary ? [`  Review summary (agent-written, not the owner's words): ${JSON.stringify(decision.summary)}`] : []),
+    ].join('\n')).join('\n')}`,
   ].join('\n\n');
 }
 
@@ -331,7 +334,11 @@ export async function runLearning(input: LearnInput, options: RunOptions = {}): 
     result.error = redact(error instanceof Error ? error.message : String(error), secret);
   } finally {
     if (directory) {
-      await rm(directory, { recursive: true, force: true });
+      try {
+        await rm(directory, { recursive: true, force: true });
+      } catch {
+        // A directory left behind must not discard a result that has already been paid for.
+      }
     }
   }
   return result;

@@ -337,6 +337,8 @@ for (const [name, preferences] of [
   ['a multi-line item', ['one\ntwo']],
   ['an item with a control character', ['a\u0007b']],
   ['an item with a Unicode line separator', ['a\u2028b']],
+  ['an item with a zero-width space', ['a\u200Bb']],
+  ['an item with a bidi override', ['a\u202Eb']],
   ['a 301-character item', ['a'.repeat(301)]],
   ['an empty item', ['']],
   ['a non-array value', 'Short.'],

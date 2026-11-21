@@ -190,6 +190,21 @@ class BrainLearningTest extends TestCase
         $this->assertNotNull($run->finished_at);
     }
 
+    public function test_a_retire_reason_of_300_characters_is_stored_in_full(): void
+    {
+        $run = $this->learningRun();
+        $retired = Preference::factory()->learned()->create(['text' => 'Use long onboarding flows.']);
+        $this->send($run, $retired);
+        $reason = str_repeat('é', 300);
+
+        app(Brain::class)->apply($run, ['summary' => 'Retired one.', 'changes' => [
+            ['op' => 'retire', 'id' => $retired->id, 'reason' => $reason],
+        ]]);
+
+        $this->assertSame(['off', $reason], [$retired->refresh()->status, $retired->note]);
+        $this->assertSame('completed', $run->refresh()->status);
+    }
+
     public function test_changes_to_preferences_no_longer_active_and_learned_are_skipped(): void
     {
         $run = $this->learningRun();

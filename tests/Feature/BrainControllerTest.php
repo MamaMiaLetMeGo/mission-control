@@ -8,6 +8,7 @@ use App\Models\Decision;
 use App\Models\Lead;
 use App\Models\MissionTask;
 use App\Models\Preference;
+use App\Services\Brain;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -111,6 +112,53 @@ class BrainControllerTest extends TestCase
 
         $this->post(route('brain.destroy', $preference))->assertRedirect(route('brain.index'));
         $this->assertDatabaseCount('preferences', 0);
+    }
+
+    public function test_an_owner_edit_that_keeps_the_text_still_wins_over_an_in_flight_run(): void
+    {
+        $lead = Lead::factory()->create();
+        $decision = Decision::factory()->create();
+        $leadOnly = Preference::factory()->learned()->create(['text' => 'Keep it short.']);
+        $offThenOn = Preference::factory()->learned()->create(['text' => 'Use tabs.']);
+        $deleted = Preference::factory()->learned()->create(['text' => 'Name branches well.']);
+        $untouched = Preference::factory()->learned()->create(['text' => 'Write small commits.']);
+        $sent = collect([$leadOnly, $offThenOn, $deleted, $untouched])->pluck('text', 'id')->all();
+        $run = BrainRun::factory()->learning()->create(['settings' => ['sent_preferences' => $sent], 'decision_ids' => [$decision->id], 'last_decision_id' => $decision->id]);
+        $queued = BrainRun::factory()->queued()->create(['settings' => ['sent_preferences' => $sent]]);
+        $finished = BrainRun::factory()->create(['settings' => ['sent_preferences' => $sent]]);
+
+        $this->post(route('brain.update', $leadOnly), ['text' => 'Keep it short.', 'lead' => $lead->key, 'status' => 'active'])->assertSessionHasNoErrors();
+        $this->post(route('brain.update', $offThenOn), ['status' => 'off'])->assertSessionHasNoErrors();
+        $this->post(route('brain.update', $offThenOn), ['status' => 'active'])->assertSessionHasNoErrors();
+        $this->post(route('brain.destroy', $deleted))->assertSessionHasNoErrors();
+
+        $remaining = [$untouched->id => 'Write small commits.'];
+        $this->assertSame($remaining, $run->refresh()->settings['sent_preferences']);
+        $this->assertSame($remaining, $queued->refresh()->settings['sent_preferences']);
+        $this->assertSame($sent, $finished->refresh()->settings['sent_preferences']);
+
+        app(Brain::class)->apply($run, ['summary' => 'Adjusted.', 'changes' => [
+            ['op' => 'update', 'id' => $leadOnly->id, 'text' => 'Keep it very short.', 'evidence' => [$decision->id]],
+            ['op' => 'retire', 'id' => $offThenOn->id, 'reason' => 'Contradicted.'],
+            ['op' => 'retire', 'id' => $untouched->id, 'reason' => 'Contradicted.'],
+        ]]);
+
+        $this->assertSame(['Keep it short.', $lead->id], [$leadOnly->refresh()->text, $leadOnly->lead_id]);
+        $this->assertSame('active', $offThenOn->refresh()->status);
+        $this->assertSame('off', $untouched->refresh()->status);
+        $this->assertSame('completed', $run->refresh()->status);
+    }
+
+    public function test_deleting_a_preference_waits_on_the_shared_lock(): void
+    {
+        $preference = Preference::factory()->create();
+        $held = Cache::lock('mission-preferences', 30);
+        $this->assertTrue($held->get());
+
+        $this->from(route('brain.index'))->post(route('brain.destroy', $preference))->assertSessionHasErrors('workflow');
+        $held->release();
+
+        $this->assertDatabaseCount('preferences', 1);
     }
 
     public function test_learn_now_queues_a_run_and_shows_why_when_nothing_is_pending(): void

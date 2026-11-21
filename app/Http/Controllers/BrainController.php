@@ -82,14 +82,18 @@ class BrainController extends Controller
                 $changes['seen_at'] = now();
             }
             $preference->update($changes);
+            $this->forgetSentPreference($preference->id);
         }));
 
         return to_route('brain.index')->with('status', 'Preference saved.');
     }
 
-    public function destroy(Preference $preference): RedirectResponse
+    public function destroy(Brain $brain, Preference $preference): RedirectResponse
     {
-        $preference->delete();
+        $brain->withPreferenceLock(fn () => DB::transaction(function () use ($preference): void {
+            $preference->delete();
+            $this->forgetSentPreference($preference->id);
+        }));
 
         return to_route('brain.index')->with('status', 'Preference deleted.');
     }
@@ -119,6 +123,21 @@ class BrainController extends Controller
         $data['status'] = $updating ? $data['status'] : 'active';
 
         return $data;
+    }
+
+    /**
+     * Take an owner-changed preference out of every unfinished Brain run, so the run's changes to it are skipped.
+     */
+    private function forgetSentPreference(int $id): void
+    {
+        BrainRun::query()->whereIn('status', ['queued', 'learning'])->lockForUpdate()->get()
+            ->each(function (BrainRun $run) use ($id): void {
+                $sent = (array) ($run->settings['sent_preferences'] ?? []);
+                if (array_key_exists($id, $sent)) {
+                    unset($sent[$id]);
+                    $run->update(['settings' => [...$run->settings, 'sent_preferences' => $sent]]);
+                }
+            });
     }
 
     private function guardCap(): void

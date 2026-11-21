@@ -485,6 +485,40 @@ PHP);
         }
     }
 
+    public function test_learning_sends_every_text_on_one_line_without_format_characters(): void
+    {
+        $directory = storage_path('framework/testing/codex-process-'.Str::uuid());
+        mkdir($directory, 0700, true);
+        file_put_contents($directory.'/fixture.php', <<<'PHP'
+<?php
+file_put_contents(__DIR__.'/payload.json', stream_get_contents(STDIN));
+echo json_encode(['type' => 'learn', 'success' => true, 'summary' => 'Nothing new.', 'changes' => []])."\n";
+PHP);
+        config(['mission.node_binary' => PHP_BINARY, 'mission.worker_path' => $directory.'/fixture.php']);
+        Lead::query()->delete();
+        $lead = Lead::factory()->create(['key' => 'design', 'name' => "Design\u{202E} Lead"]);
+        Preference::factory()->learned()->create(['text' => "Use\u{200B} tabs."]);
+        Preference::factory()->create(['text' => "Owner\u{2066} rule."]);
+        $task = MissionTask::factory()->create(['title' => "Build\u{200D} the form", 'lead_id' => $lead->id, 'recommendation' => "Added\u{FEFF} it."]);
+        $decision = Decision::factory()->for($task, 'task')->create(['action' => 'request_changes', 'feedback' => "Shorter\nplease.\tThanks\u{202E}"]);
+        $run = BrainRun::factory()->queued()->create(['settings' => ['max_runtime_seconds' => 60, 'max_tokens' => 1000], 'decision_ids' => [$decision->id], 'last_decision_id' => $decision->id]);
+
+        try {
+            app(CodexProcess::class)->learn($run, fn (array $event) => null);
+
+            $payload = json_decode(file_get_contents($directory.'/payload.json'), true);
+            $this->assertSame([['key' => 'design', 'name' => 'Design Lead']], $payload['leads']);
+            $this->assertSame('Use tabs.', $payload['preferences'][0]['text']);
+            $this->assertSame(['Owner rule.'], $payload['fixed']);
+            $this->assertSame(
+                ['feedback' => 'Shorter please. Thanks', 'task' => 'Build the form', 'summary' => 'Added it.'],
+                array_intersect_key($payload['decisions'][0], array_flip(['feedback', 'task', 'summary'])),
+            );
+        } finally {
+            File::deleteDirectory($directory);
+        }
+    }
+
     public function test_learning_sends_at_most_20_leads_and_preferences_and_unlisted_leads_as_null(): void
     {
         $directory = storage_path('framework/testing/codex-process-'.Str::uuid());

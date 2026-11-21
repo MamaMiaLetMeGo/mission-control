@@ -129,7 +129,7 @@ class CodexProcess
         $settings = $run->settings;
         $brain = app(Brain::class);
         $trim = fn (string $value): string => preg_replace('/^[\s\p{Z}]+|[\s\p{Z}]+$/u', '', $value) ?? '';
-        $line = fn (mixed $value, int $max): string => $trim(mb_substr($trim(preg_replace('/[\x00-\x1F\x7F\x{0085}\x{2028}\x{2029}]/u', ' ', (string) $value) ?? ''), 0, $max));
+        $line = fn (mixed $value, int $max): string => $trim(mb_substr($trim(preg_replace(['/[\x00-\x1F\x7F\x{0085}\x{2028}\x{2029}]/u', '/\p{Cf}/u'], [' ', ''], (string) $value) ?? ''), 0, $max));
         $leads = Lead::query()->orderBy('position')->orderBy('id')->limit(20)->get()
             ->map(fn (Lead $lead): array => ['id' => $lead->id, 'key' => $line($lead->key, 50), 'name' => $line($lead->name, 100)])
             ->filter(fn (array $lead): bool => $lead['key'] !== '' && $lead['name'] !== '')

@@ -95,10 +95,17 @@ export function validateInput(value: unknown): MissionInput {
 export const preferencesMessage = 'preferences must list at most 20 single-line items of at most 300 characters.';
 
 /**
- * True for one owner preference: 1-300 code points on a single line, with no control characters or Unicode line separators.
+ * True when the text has a control character, a Unicode line separator or an invisible format character (zero-width or bidi controls).
+ */
+export function hasControlCharacters(value: string): boolean {
+  return /[\u0000-\u001F\u007F\u0085\u2028\u2029]/.test(value) || /\p{Cf}/u.test(value);
+}
+
+/**
+ * True for one owner preference: 1-300 code points on a single line, with no control, line-separator or format characters.
  */
 export function validPreferenceText(value: unknown): boolean {
-  return typeof value === 'string' && value.length > 0 && codePoints(value) <= 300 && !/[\u0000-\u001F\u007F\u0085\u2028\u2029]/.test(value);
+  return typeof value === 'string' && value.length > 0 && codePoints(value) <= 300 && !hasControlCharacters(value);
 }
 
 export function validPreferenceTexts(value: unknown): boolean {
