@@ -83,6 +83,21 @@ class MissionMergeTest extends TestCase
         $this->assertDatabaseHas('decisions', ['mission_task_id' => $task->id, 'action' => 'merge']);
     }
 
+    public function test_merge_refuses_an_approved_revision_without_a_passing_security_check(): void
+    {
+        [$task, $repository] = $this->reviewedTask();
+        $reviewData = $task->review_data;
+        unset($reviewData['security']);
+        $task->update(['status' => 'approved', 'review_data' => $reviewData]);
+
+        $response = $this->post(route('tasks.merge', $task), ['revision' => $task->revision]);
+
+        $response->assertSessionHasErrors(['task' => 'Approval requires passing tests, an independent review and a security check of this revision. Refresh or re-run a task reviewed before security checks existed.']);
+        $this->assertSame('approved', $task->refresh()->status);
+        $this->assertSame($task->base_revision, $this->git($repository, ['rev-parse', 'HEAD']));
+        $this->assertDatabaseMissing('decisions', ['mission_task_id' => $task->id, 'action' => 'merge']);
+    }
+
     public function test_merge_refuses_a_dirty_source_checkout_without_changing_it(): void
     {
         [$task, $repository] = $this->reviewedTask();

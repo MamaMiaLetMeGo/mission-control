@@ -1,7 +1,9 @@
 <?php
 
+use App\Jobs\PlanGoal;
 use App\Jobs\RunMissionTask;
 use App\Models\AgentRun;
+use App\Models\Goal;
 use App\Services\ChiefOfStaff;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -10,7 +12,8 @@ use Illuminate\Support\Facades\Schedule;
 Artisan::command('mission:recover {--older-than=20 : Only mark runs older than this many minutes as failed}', function (): void {
     $minutes = max(15, (int) $this->option('older-than'));
     $recovered = 0;
-    $statuses = DB::table(config('queue.connections.database.table', 'jobs'))->where('queue', 'missions')->exists() ? ['running'] : ['queued', 'running'];
+    $jobPending = DB::table(config('queue.connections.database.table', 'jobs'))->where('queue', 'missions')->exists();
+    $statuses = $jobPending ? ['running'] : ['queued', 'running'];
     $runs = AgentRun::query()->whereIn('status', $statuses)->where('updated_at', '<', now()->subMinutes($minutes))->get();
     foreach ($runs as $run) {
         $ownedLocks = [];
@@ -43,10 +46,15 @@ Artisan::command('mission:recover {--older-than=20 : Only mark runs older than t
         $recovered++;
     }
     $this->info('Marked '.$recovered.' interrupted runs as failed. No tasks were restarted.');
+    $goals = Goal::query()->whereIn('status', $jobPending ? ['planning'] : ['queued', 'planning'])->where('updated_at', '<', now()->subMinutes($minutes))->pluck('id');
+    foreach ($goals as $goalId) {
+        (new PlanGoal($goalId))->failed(new RuntimeException('Planning was interrupted. Give the goal again.'));
+    }
+    $this->info('Marked '.$goals->count().' interrupted goal plan(s) as failed.');
 })->purpose('Recover stale mission runs without repeating external actions');
 
 Artisan::command('mission:dispatch', function (ChiefOfStaff $chief): void {
     $this->info('Started '.$chief->dispatch().' goal task(s).');
 })->purpose('Start goal tasks that are ready while an agent is free');
 
-Schedule::command('mission:dispatch')->everyMinute()->withoutOverlapping();
+Schedule::command('mission:dispatch')->everyMinute()->withoutOverlapping(5);

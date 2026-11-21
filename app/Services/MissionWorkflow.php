@@ -41,19 +41,44 @@ class MissionWorkflow
             if (! in_array($task->status, ['backlog', 'changes_requested', 'deferred', 'failed'], true)) {
                 $this->reject('Only backlog, deferred, failed, or changes-requested tasks can be started.');
             }
-            $readiness = $this->settings->readiness();
-            if (! $readiness['ready']) {
-                $this->reject(implode(' ', $readiness['issues']));
-            }
-            $settings = $this->settings->all();
-            if ($this->runsCountedToday() >= $settings['daily_run_limit']) {
-                $this->reject('The daily run limit has been reached. Increase it in Settings or wait until tomorrow.');
-            }
-            if ($this->tokens->exhausted()) {
-                $this->reject('The daily token limit of '.$this->tokens->limit().' has been reached. Raise it in Settings or wait until tomorrow.');
-            }
-            $this->startRun($task, $settings);
+            $this->startWhileLocked($task);
         });
+    }
+
+    /**
+     * Start a goal task that is still in the backlog, for the dispatcher. Returns false without doing anything when the
+     * task has left the backlog or has no goal; refuses like queue() when a limit or readiness check fails.
+     */
+    public function queueBacklog(MissionTask $task): bool
+    {
+        return Cache::lock('mission-workflow', 120)->block(5, function () use ($task): bool {
+            $task->refresh();
+            if ($task->status !== 'backlog' || $task->goal_id === null) {
+                return false;
+            }
+            $this->startWhileLocked($task);
+
+            return true;
+        });
+    }
+
+    /**
+     * Check readiness and the daily limits, then start a run. Callers hold the `mission-workflow` lock.
+     */
+    private function startWhileLocked(MissionTask $task): void
+    {
+        $readiness = $this->settings->readiness();
+        if (! $readiness['ready']) {
+            $this->reject(implode(' ', $readiness['issues']));
+        }
+        $settings = $this->settings->all();
+        if ($this->runsCountedToday() >= $settings['daily_run_limit']) {
+            $this->reject('The daily run limit has been reached. Increase it in Settings or wait until tomorrow.');
+        }
+        if ($this->tokens->exhausted()) {
+            $this->reject('The daily token limit of '.$this->tokens->limit().' has been reached. Raise it in Settings or wait until tomorrow.');
+        }
+        $this->startRun($task, $settings);
     }
 
     /**
@@ -222,9 +247,7 @@ class MissionWorkflow
                 if (! in_array($task->status, ['review', 'deferred'], true) || ! $revision || $revision !== $task->revision) {
                     $this->reject('Reload the current review before approving its exact revision.');
                 }
-                if (data_get($task->review_data, 'success') !== true || data_get($task->review_data, 'review.verdict') !== 'pass' || data_get($task->review_data, 'tests.exitCode') !== 0 || data_get($task->review_data, 'security.verdict') !== 'pass') {
-                    $this->reject('Approval requires passing tests, an independent review and a security check of this revision. Refresh or re-run a task reviewed before security checks existed.');
-                }
+                $this->assertApprovalEvidence($task);
                 $this->git->assertReviewedRevision($task);
                 $this->evidence->assertComplete($task);
                 $run = $task->runs()->first();
@@ -259,6 +282,7 @@ class MissionWorkflow
             if ($task->status !== 'approved' || $task->revision !== $revision) {
                 $this->reject('Only the currently approved revision can be merged.');
             }
+            $this->assertApprovalEvidence($task);
             $run = $task->runs()->first();
             if (! $run) {
                 $this->reject('The original run settings are missing.');
@@ -312,6 +336,17 @@ class MissionWorkflow
                 report($exception);
                 $task->update(['error' => self::REFRESH_START_FAILED]);
             }
+        }
+    }
+
+    /**
+     * Refuse unless the task's review evidence shows success, passing tests, a passing independent review and a passing
+     * security check.
+     */
+    private function assertApprovalEvidence(MissionTask $task): void
+    {
+        if (data_get($task->review_data, 'success') !== true || data_get($task->review_data, 'review.verdict') !== 'pass' || data_get($task->review_data, 'tests.exitCode') !== 0 || data_get($task->review_data, 'security.verdict') !== 'pass') {
+            $this->reject('Approval requires passing tests, an independent review and a security check of this revision. Refresh or re-run a task reviewed before security checks existed.');
         }
     }
 

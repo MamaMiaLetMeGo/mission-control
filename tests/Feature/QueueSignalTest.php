@@ -17,7 +17,7 @@ class QueueSignalTest extends TestCase
     {
         $base = ['tests' => ['exitCode' => 0], 'review' => ['verdict' => 'pass'], 'security' => ['verdict' => 'pass', 'summary' => 'Fine.', 'findings' => []], 'diff' => ['files' => ['app/Foo.php'], 'additions' => 10, 'deletions' => 5], 'reviewRounds' => 0];
 
-        return MissionTask::factory()->create(['status' => $status, 'review_data' => array_merge($base, $reviewData)] + $attributes);
+        return MissionTask::factory()->create(['status' => $status, 'review_data' => array_merge($base, $reviewData)] + $attributes + ['revision' => str_repeat('a', 40)]);
     }
 
     private function signal(MissionTask $task): array
@@ -48,6 +48,15 @@ class QueueSignalTest extends TestCase
         }
     }
 
+    public function test_a_task_without_a_reviewed_revision_is_yellow(): void
+    {
+        foreach (['review', 'approved', 'deferred'] as $status) {
+            $task = MissionTask::factory()->create(['status' => $status, 'revision' => null, 'review_data' => null]);
+            $this->assertSame(['signal' => 'yellow', 'reason' => 'No reviewed revision yet.'], $this->signal($task), $status);
+            $this->assertSame('yellow', $task->refresh()->signal);
+        }
+    }
+
     public function test_other_statuses_have_no_signal(): void
     {
         foreach (['backlog', 'queued', 'running', 'merged', 'rejected'] as $status) {
@@ -62,7 +71,7 @@ class QueueSignalTest extends TestCase
 
     public function test_missing_security_data_is_yellow(): void
     {
-        $task = MissionTask::factory()->create(['status' => 'review', 'review_data' => ['diff' => ['files' => [], 'additions' => 1, 'deletions' => 1]]]);
+        $task = MissionTask::factory()->create(['status' => 'review', 'revision' => str_repeat('a', 40), 'review_data' => ['diff' => ['files' => [], 'additions' => 1, 'deletions' => 1]]]);
         $this->assertSame(['signal' => 'yellow', 'reason' => 'Reviewed before security checks existed.'], $this->signal($task));
     }
 

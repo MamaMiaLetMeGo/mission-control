@@ -82,8 +82,9 @@ class ChiefOfStaff
                     continue;
                 }
                 try {
-                    $workflow->queue($task);
-                    $started++;
+                    if ($workflow->queueBacklog($task)) {
+                        $started++;
+                    }
                 } catch (ValidationException|LockTimeoutException) {
                     break;
                 } catch (Throwable $exception) {

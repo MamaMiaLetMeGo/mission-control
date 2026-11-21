@@ -39,14 +39,14 @@ class CodexProcess
             'preview' => $this->missionSettings->previewConfiguration($settings),
             'previewRoot' => config('mission.preview_root'),
             'previewDatabase' => config('mission.preview_database'),
-            'reviewRounds' => ($settings['mode'] ?? null) === 'refresh' ? 0 : (int) ($settings['review_rounds'] ?? 0),
+            'reviewRounds' => ($settings['mode'] ?? null) === 'refresh' ? 0 : max(0, min(3, (int) ($settings['review_rounds'] ?? 0))),
         ];
         if ($task->lead) {
             $payload['lead'] = ['name' => $task->lead->name, 'instructions' => $task->lead->instructions];
         }
         if ($task->goal && ($settings['mode'] ?? null) !== 'refresh') {
-            $clean = fn (mixed $value, int $max): string => mb_substr(str_replace("\0", '', (string) $value), 0, $max);
-            $goal = $clean($task->goal->request, 5000);
+            $goal = mb_substr(str_replace("\0", '', (string) $task->goal->request), 0, 5000);
+            $clean = fn (mixed $value, int $max): string => mb_substr(preg_replace('/[\x00-\x1F\x7F]/u', ' ', (string) $value) ?? '', 0, $max);
             if (trim($goal) !== '') {
                 $payload['goal'] = $goal;
             }
@@ -57,7 +57,7 @@ class CodexProcess
                 'summary' => $clean($teammate->recommendation, 600),
                 'files' => array_slice(array_values(array_filter(
                     (array) ($teammate->review_data['diff']['files'] ?? []),
-                    fn (mixed $file): bool => is_string($file) && $file !== '' && mb_strlen($file) <= 300 && ! str_contains($file, "\0"),
+                    fn (mixed $file): bool => is_string($file) && $file !== '' && mb_strlen($file) <= 300 && preg_match('/[\x00-\x1F\x7F]/u', $file) === 0,
                 )), 0, 30),
             ])->all();
         }
@@ -86,7 +86,7 @@ class CodexProcess
             'mode' => 'plan',
             'goalId' => $goal->id,
             'goal' => $goal->request,
-            'leads' => Lead::query()->active()->get()->map(fn (Lead $lead): array => ['key' => $lead->key, 'name' => $lead->name, 'instructions' => $lead->instructions])->all(),
+            'leads' => Lead::query()->active()->orderBy('id')->limit(20)->get()->map(fn (Lead $lead): array => ['key' => $lead->key, 'name' => $lead->name, 'instructions' => $lead->instructions])->all(),
             'repositoryPath' => $settings['repository_path'],
             'baseBranch' => $settings['base_branch'],
             'worktreeRoot' => config('mission.worktree_root'),

@@ -29,6 +29,10 @@ class QueueSignal
             return ['signal' => null, 'reason' => null];
         }
 
+        if (trim((string) $task->revision) === '') {
+            return ['signal' => 'yellow', 'reason' => 'No reviewed revision yet.'];
+        }
+
         $data = is_array($task->review_data) ? $task->review_data : [];
         $diff = is_array($data['diff'] ?? null) ? $data['diff'] : [];
         $lines = (int) ($diff['additions'] ?? 0) + (int) ($diff['deletions'] ?? 0);

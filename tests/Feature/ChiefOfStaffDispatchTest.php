@@ -166,11 +166,53 @@ class ChiefOfStaffDispatchTest extends TestCase
         $this->assertSame([], $this->queued);
     }
 
+    public function test_a_task_deferred_after_selection_is_not_started(): void
+    {
+        Queue::fake();
+        $this->readyEnvironment();
+        $task = MissionTask::factory()->forGoal(Goal::factory()->create())->create();
+        $deferred = false;
+        MissionTask::retrieved(function (MissionTask $retrieved) use ($task, &$deferred): void {
+            if (! $deferred && $retrieved->is($task)) {
+                $deferred = true;
+                MissionTask::query()->whereKey($task->id)->toBase()->update(['status' => 'deferred']);
+            }
+        });
+
+        $this->assertSame(0, app(ChiefOfStaff::class)->dispatch());
+
+        $this->assertTrue($deferred);
+        $this->assertSame('deferred', $task->refresh()->status);
+        $this->assertSame(0, $task->runs()->count());
+        Queue::assertNothingPushed();
+    }
+
+    public function test_queue_backlog_only_starts_goal_tasks_still_in_the_backlog(): void
+    {
+        Queue::fake();
+        $this->readyEnvironment();
+        $goal = Goal::factory()->create();
+        $workflow = app(MissionWorkflow::class);
+        foreach ([['status' => 'deferred'], ['status' => 'failed'], ['status' => 'changes_requested']] as $attributes) {
+            $task = MissionTask::factory()->forGoal($goal)->create();
+            MissionTask::query()->whereKey($task->id)->toBase()->update($attributes);
+
+            $this->assertFalse($workflow->queueBacklog($task));
+            $this->assertSame($attributes['status'], $task->refresh()->status);
+        }
+        $handMade = MissionTask::factory()->create();
+
+        $this->assertFalse($workflow->queueBacklog($handMade));
+        $this->assertSame('backlog', $handMade->refresh()->status);
+        $this->assertDatabaseCount('agent_runs', 0);
+        Queue::assertNothingPushed();
+    }
+
     public function test_an_unexpected_error_is_reported_and_stops_the_loop(): void
     {
         config(['mission.max_parallel_runs' => 3]);
         $this->mock(MissionWorkflow::class, function ($mock): void {
-            $mock->shouldReceive('queue')->once()->andThrow(new \RuntimeException('git exploded'));
+            $mock->shouldReceive('queueBacklog')->once()->andThrow(new \RuntimeException('git exploded'));
         });
         $goal = Goal::factory()->create();
         MissionTask::factory()->forGoal($goal, 1)->create();
@@ -246,14 +288,17 @@ class ChiefOfStaffDispatchTest extends TestCase
         $this->assertNotNull($event);
         $this->assertSame('* * * * *', $event->expression);
         $this->assertTrue($event->withoutOverlapping);
+        $this->assertSame(5, $event->expiresAt);
     }
 
     private function recordingWorkflow(bool $mergeFake = false): void
     {
         $this->mock(MissionWorkflow::class, function ($mock) use ($mergeFake): void {
-            $mock->shouldReceive('queue')->andReturnUsing(function (MissionTask $task): void {
+            $mock->shouldReceive('queueBacklog')->andReturnUsing(function (MissionTask $task): bool {
                 $this->queued[] = $task->id;
                 $task->update(['status' => 'queued']);
+
+                return true;
             });
             if ($mergeFake) {
                 $mock->shouldReceive('merge')->once()->andReturnUsing(fn (MissionTask $task) => $task->update(['status' => 'merged']));

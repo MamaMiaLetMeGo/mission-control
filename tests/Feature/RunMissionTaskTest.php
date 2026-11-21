@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Jobs\RunMissionTask;
 use App\Models\AgentRun;
+use App\Models\Goal;
 use App\Models\MissionTask;
 use App\Services\CodexProcess;
 use App\Services\RunSlots;
@@ -294,6 +295,41 @@ class RunMissionTaskTest extends TestCase
         Artisan::call('mission:recover');
 
         $this->assertSame('failed', $waiting->refresh()->status);
+    }
+
+    public function test_recovery_fails_a_stale_planning_goal_and_reports_the_count(): void
+    {
+        $this->freezeTime();
+        $stale = Goal::factory()->planning()->create(['updated_at' => now()->subMinutes(30)]);
+        $fresh = Goal::factory()->planning()->create();
+        $planned = Goal::factory()->create(['updated_at' => now()->subMinutes(30)]);
+        DB::table('jobs')->insert(['queue' => 'missions', 'payload' => '{}', 'attempts' => 1, 'reserved_at' => null, 'available_at' => now()->getTimestamp(), 'created_at' => now()->getTimestamp()]);
+
+        $this->artisan('mission:recover')->expectsOutput('Marked 1 interrupted goal plan(s) as failed.')->assertExitCode(0);
+
+        $this->assertSame('failed', $stale->refresh()->status);
+        $this->assertSame('Planning was interrupted. Give the goal again.', $stale->error);
+        $this->assertNotNull($stale->finished_at);
+        $this->assertSame('planning', $fresh->refresh()->status);
+        $this->assertSame($planned->status, $planned->refresh()->status);
+    }
+
+    public function test_recovery_fails_a_stale_queued_goal_only_once_no_job_is_pending(): void
+    {
+        $this->freezeTime();
+        $goal = Goal::factory()->queued()->create(['updated_at' => now()->subMinutes(30)]);
+        DB::table('jobs')->insert(['queue' => 'missions', 'payload' => '{}', 'attempts' => 0, 'reserved_at' => null, 'available_at' => now()->getTimestamp(), 'created_at' => now()->getTimestamp()]);
+
+        Artisan::call('mission:recover');
+        $this->assertSame('queued', $goal->refresh()->status);
+
+        DB::table('jobs')->delete();
+        Queue::fake();
+        Artisan::call('mission:recover');
+
+        $this->assertSame('failed', $goal->refresh()->status);
+        $this->assertSame('Planning was interrupted. Give the goal again.', $goal->error);
+        Queue::assertNothingPushed();
     }
 
     public function test_recovery_ignores_a_cache_lock_left_by_a_busy_slot(): void
