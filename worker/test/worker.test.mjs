@@ -283,3 +283,113 @@ test('phase events are tagged with the code, test and review stages in order', a
   assert.equal(result.success, true);
   assert.deepEqual(events.filter((event) => event.stage).map((event) => event.stage), ['code', 'test', 'review']);
 });
+
+async function commitOnBase(input, environment, file, content, message) {
+  await writeFile(path.join(input.repositoryPath, file), content);
+  await git(['add', '.'], input.repositoryPath, environment);
+  await git(['-c', 'user.name=Test', '-c', 'user.email=test@localhost', 'commit', '--no-gpg-sign', '-m', message], input.repositoryPath, environment);
+}
+
+test('refresh replays a reviewed change onto a moved base without the implementation agent', async (t) => {
+  const { input, environment } = await fixture(t);
+  const original = await runMission(input, { agent: successfulAgent() });
+  assert.equal(original.success, true, original.error);
+  await commitOnBase(input, environment, 'other.txt', 'moved\n', 'Move base');
+  const roles = [];
+  const events = [];
+  const refreshed = await runMission(
+    { ...input, mode: 'refresh', sourceRevision: original.revision, previousSummary: original.summary },
+    { agent: async (request) => { roles.push(request.role); return successfulAgent()(request); }, emit: (event) => events.push(event) },
+  );
+  assert.equal(refreshed.success, true, refreshed.error);
+  assert.deepEqual(roles, ['review']);
+  assert.notEqual(refreshed.revision, original.revision);
+  assert.notEqual(refreshed.baseRevision, original.baseRevision);
+  assert.equal(refreshed.baseRevision, await git(['rev-parse', 'main'], input.repositoryPath, environment));
+  assert.equal(await git(['rev-parse', `${refreshed.revision}^`], refreshed.worktreePath, environment), refreshed.baseRevision);
+  assert.equal(await readFile(path.join(refreshed.worktreePath, 'feature.txt'), 'utf8'), 'implemented  \n\n');
+  assert.equal(await readFile(path.join(refreshed.worktreePath, 'other.txt'), 'utf8'), 'moved\n');
+  assert.equal(refreshed.summary, original.summary);
+  assert.equal(refreshed.tests.exitCode, 0);
+  assert.equal(refreshed.review.verdict, 'pass');
+  assert.deepEqual(events.filter((event) => event.stage).map((event) => event.stage), ['code', 'test', 'review']);
+  assert.match(events.find((event) => event.stage === 'code').message, /replay/i);
+  assert.deepEqual(await readdir(path.join(input.worktreeRoot, '.locks')), []);
+});
+
+test('a refresh that conflicts fails cleanly', async (t) => {
+  const { input, environment } = await fixture(t);
+  const original = await runMission(input, { agent: successfulAgent() });
+  assert.equal(original.success, true, original.error);
+  await commitOnBase(input, environment, 'feature.txt', 'a different feature\n', 'Conflicting base');
+  const roles = [];
+  const refreshed = await runMission(
+    { ...input, mode: 'refresh', sourceRevision: original.revision, previousSummary: original.summary },
+    { agent: async (request) => { roles.push(request.role); return successfulAgent()(request); } },
+  );
+  assert.equal(refreshed.success, false);
+  assert.equal(refreshed.error, 'This change no longer applies to the current base. Run the task again.');
+  assert.equal(refreshed.revision, '');
+  assert.deepEqual(roles, []);
+  assert.equal(await git(['rev-parse', 'HEAD'], refreshed.worktreePath, environment), refreshed.baseRevision);
+  assert.equal(await git(['status', '--porcelain', '--untracked-files=all'], refreshed.worktreePath, environment), '');
+  assert.equal(await readFile(path.join(refreshed.worktreePath, 'feature.txt'), 'utf8'), 'a different feature\n');
+  assert.ok(!(await readdir(refreshed.artifactPath)).includes('diff.patch'));
+  assert.deepEqual(await readdir(path.join(input.worktreeRoot, '.locks')), []);
+});
+
+test('sourceRevision is refused outside refresh mode', async (t) => {
+  const { input, environment } = await fixture(t);
+  const head = await git(['rev-parse', 'HEAD'], input.repositoryPath, environment);
+  assert.throws(() => validateInput({ ...input, sourceRevision: head }), /sourceRevision/);
+  assert.throws(() => validateInput({ ...input, mode: 'implement', sourceRevision: head }), /sourceRevision/);
+  let calls = 0;
+  const result = await runMission({ ...input, sourceRevision: head }, { agent: async (request) => { calls++; return successfulAgent()(request); } });
+  assert.equal(result.success, false);
+  assert.match(result.error, /sourceRevision/);
+  assert.equal(calls, 0);
+  assert.equal(result.worktreePath, '');
+});
+
+test('refresh mode requires a full sourceRevision and a known mode', async (t) => {
+  const { input } = await fixture(t);
+  assert.throws(() => validateInput({ ...input, mode: 'refresh' }), /sourceRevision/);
+  assert.throws(() => validateInput({ ...input, mode: 'refresh', sourceRevision: 'HEAD' }), /sourceRevision/);
+  assert.throws(() => validateInput({ ...input, mode: 'refresh', sourceRevision: '--help' }), /sourceRevision/);
+  assert.throws(() => validateInput({ ...input, mode: 'rebase' }), /mode/);
+  assert.throws(() => validateInput({ ...input, previousSummary: 'x'.repeat(20001) }), /previousSummary/);
+  const result = await runMission({ ...input, mode: 'refresh' }, { agent: successfulAgent() });
+  assert.equal(result.success, false);
+  assert.match(result.error, /sourceRevision/);
+  assert.equal(result.worktreePath, '');
+});
+
+test('a refresh whose sourceRevision is not a commit in the repository fails clearly', async (t) => {
+  const { input, environment } = await fixture(t);
+  const tree = await git(['rev-parse', 'HEAD^{tree}'], input.repositoryPath, environment);
+  for (const sourceRevision of ['a'.repeat(40), tree]) {
+    let calls = 0;
+    const result = await runMission({ ...input, mode: 'refresh', sourceRevision }, { agent: async (request) => { calls++; return successfulAgent()(request); } });
+    assert.equal(result.success, false);
+    assert.equal(result.error, 'sourceRevision is not a commit in this repository.');
+    assert.equal(result.revision, '');
+    assert.equal(calls, 0);
+  }
+  assert.deepEqual(await readdir(path.join(input.worktreeRoot, '.locks')), []);
+});
+
+test('a refresh of a change the base already contains fails with no code changes', async (t) => {
+  const { input, environment } = await fixture(t);
+  const original = await runMission(input, { agent: successfulAgent() });
+  assert.equal(original.success, true, original.error);
+  await git(['merge', '--ff-only', original.revision], input.repositoryPath, environment);
+  const roles = [];
+  const refreshed = await runMission(
+    { ...input, mode: 'refresh', sourceRevision: original.revision, previousSummary: original.summary },
+    { agent: async (request) => { roles.push(request.role); return successfulAgent()(request); } },
+  );
+  assert.equal(refreshed.success, false);
+  assert.match(refreshed.error, /produced no code changes/);
+  assert.equal(refreshed.revision, '');
+  assert.deepEqual(roles, []);
+});

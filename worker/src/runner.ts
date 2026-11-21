@@ -100,6 +100,14 @@ export async function runMission(rawInput: MissionInput, options: RunOptions = {
     result.artifactPath = path.join(artifactRoot, attempt);
     await mkdir(result.artifactPath, { mode: 0o700 });
     result.baseRevision = await git(['rev-parse', '--verify', '--end-of-options', `refs/heads/${input.baseBranch}^{commit}`], repositoryPath, environment, signal);
+    if (input.mode === 'refresh') {
+      try {
+        await git(['cat-file', '-e', '--end-of-options', `${input.sourceRevision}^{commit}`], repositoryPath, environment, signal);
+      } catch {
+        signal.throwIfAborted();
+        throw new Error('sourceRevision is not a commit in this repository.');
+      }
+    }
     emit({ type: 'phase', message: 'Creating an isolated worktree from the committed base revision.' });
     repositoryLockPath = await acquireRepositoryLock(
       path.join(lockRoot, `repo-${createHash('sha256').update(commonDirectory).digest('hex')}`),
@@ -129,29 +137,35 @@ export async function runMission(rawInput: MissionInput, options: RunOptions = {
       }
     }
     const agent = options.agent || createCodexAgent(secret, runtimeHome, emit);
-    emit({ type: 'phase', role: 'implementation', stage: 'code', message: 'Implementing the task in its isolated worktree.' });
-    const implementation = await agent({
-      role: 'implementation', workingDirectory: result.worktreePath, model: input.model, signal,
-      prompt: [
-        input.lead
-          ? `You are a sub-agent working for the ${input.lead.name}. Implement the task below in this worktree only.`
-          : 'You are the engineering worker for Mission Control. Implement the task below in this worktree only.',
-        'Read the repository instructions. Make a bounded, reviewable change that meets the acceptance criteria.',
-        'Do not commit, switch branches, merge, fetch, push, deploy, delete worktrees, or modify Git configuration.',
-        'Do not read secrets or copy environment files from another checkout. Do not access the source checkout.',
-        'Network access is disabled. Dependencies may be absent; report this honestly instead of fabricating verification.',
-        'A separate runner will commit your changes, execute the configured tests, and request an independent review.',
-        'Finish with a concise summary of the change and any limitations. Do not claim screenshots or tests that were not produced.',
-        ...(input.lead ? [`Lead instructions:\n${input.lead.instructions}`] : []),
-        `Task title: ${input.title}`,
-        `Request:\n${input.request}`,
-        `Acceptance criteria:\n${input.acceptanceCriteria}`,
-        `Configured test command (argv): ${JSON.stringify(input.testCommand)}`,
-      ].join('\n\n'),
-    });
-    result.summary = redact(implementation.response, secret);
-    addUsage(result.usage, implementation.usage);
-    enforceTokenLimit(result.usage, input.maxTokens);
+    if (input.mode === 'refresh') {
+      emit({ type: 'phase', role: 'implementation', stage: 'code', message: 'Replaying the reviewed change onto the current base revision.' });
+      await replayReviewedChange(input.sourceRevision!, result.worktreePath, environment, signal);
+      result.summary = redact(input.previousSummary ?? '', secret);
+    } else {
+      emit({ type: 'phase', role: 'implementation', stage: 'code', message: 'Implementing the task in its isolated worktree.' });
+      const implementation = await agent({
+        role: 'implementation', workingDirectory: result.worktreePath, model: input.model, signal,
+        prompt: [
+          input.lead
+            ? `You are a sub-agent working for the ${input.lead.name}. Implement the task below in this worktree only.`
+            : 'You are the engineering worker for Mission Control. Implement the task below in this worktree only.',
+          'Read the repository instructions. Make a bounded, reviewable change that meets the acceptance criteria.',
+          'Do not commit, switch branches, merge, fetch, push, deploy, delete worktrees, or modify Git configuration.',
+          'Do not read secrets or copy environment files from another checkout. Do not access the source checkout.',
+          'Network access is disabled. Dependencies may be absent; report this honestly instead of fabricating verification.',
+          'A separate runner will commit your changes, execute the configured tests, and request an independent review.',
+          'Finish with a concise summary of the change and any limitations. Do not claim screenshots or tests that were not produced.',
+          ...(input.lead ? [`Lead instructions:\n${input.lead.instructions}`] : []),
+          `Task title: ${input.title}`,
+          `Request:\n${input.request}`,
+          `Acceptance criteria:\n${input.acceptanceCriteria}`,
+          `Configured test command (argv): ${JSON.stringify(input.testCommand)}`,
+        ].join('\n\n'),
+      });
+      result.summary = redact(implementation.response, secret);
+      addUsage(result.usage, implementation.usage);
+      enforceTokenLimit(result.usage, input.maxTokens);
+    }
     if (await git(['rev-parse', 'HEAD'], result.worktreePath, environment, signal) !== result.baseRevision
       || await git(['branch', '--show-current'], result.worktreePath, environment, signal) !== result.branch) {
       throw new Error('The implementation changed Git history or switched branches. The run cannot be approved.');
@@ -274,6 +288,25 @@ async function acquireRepositoryLock(lockPath: string, timeoutMs: number, signal
       signal.throwIfAborted();
       throw error;
     }
+  }
+}
+
+/**
+ * Applies an already-reviewed commit to the worktree's index and files without committing, so the normal staging checks and commit follow.
+ * A conflict is undone before failing, leaving the worktree at its base revision with no half-applied change.
+ */
+async function replayReviewedChange(sourceRevision: string, worktreePath: string, environment: Record<string, string>, signal: AbortSignal): Promise<void> {
+  try {
+    await git(['-c', 'user.name=Mission Control', '-c', 'user.email=mission-control@localhost', 'cherry-pick', '--no-commit', '--end-of-options', sourceRevision], worktreePath, environment, signal);
+  } catch {
+    signal.throwIfAborted();
+    try {
+      await git(['cherry-pick', '--abort'], worktreePath, environment, signal);
+    } catch {
+      // `--no-commit` records no cherry-pick in progress, so `--abort` can refuse; `reset --merge` below undoes the attempt either way.
+    }
+    await git(['reset', '--merge'], worktreePath, environment, signal);
+    throw new Error('This change no longer applies to the current base. Run the task again.');
   }
 }
 

@@ -45,6 +45,20 @@ export function validateInput(value: unknown): MissionInput {
       throw new Error('lead must have a name (max 100 characters) and instructions (max 4000 characters).');
     }
   }
+  if (input.mode !== undefined && input.mode !== 'implement' && input.mode !== 'refresh') {
+    throw new Error('mode must be "implement" or "refresh".');
+  }
+  if (input.mode === 'refresh') {
+    if (typeof input.sourceRevision !== 'string' || !/^[0-9a-f]{40,64}$/.test(input.sourceRevision)) {
+      throw new Error('sourceRevision must be a full 40-64 character hexadecimal commit hash in refresh mode.');
+    }
+  } else if (input.sourceRevision !== undefined) {
+    throw new Error('sourceRevision is only allowed in refresh mode.');
+  }
+  if (input.previousSummary !== undefined
+    && (typeof input.previousSummary !== 'string' || input.previousSummary.length > 20000 || input.previousSummary.includes('\0'))) {
+    throw new Error('previousSummary must be a string of at most 20000 characters.');
+  }
   if (input.preview !== undefined) {
     const preview = input.preview as Record<string, unknown>;
     if (!preview || typeof preview !== 'object' || typeof preview.enabled !== 'boolean') throw new Error('preview.enabled must be a boolean.');
