@@ -63,6 +63,36 @@ test('a valid plan round-trips from a read-only planning agent in a temporary wo
   assert.deepEqual(await planWorktrees(repositoryPath, environment), []);
 });
 
+test('the planning prompt lists owner preferences before the goal', async (t) => {
+  const { input } = await fixture(t);
+  const seen = [];
+  const preferences = [{ text: 'Keep copy short.', lead: null }, { text: 'Use Livewire.', lead: 'frontend' }];
+  const result = await runPlanning({ ...input, preferences }, { agent: async (request) => { seen.push(request); return { response: JSON.stringify(plan()), usage: emptyUsage() }; } });
+  assert.equal(result.success, true, result.error);
+  assert.ok(seen[0].prompt.includes('Owner preferences. Write briefs that respect these:\n- [all leads] Keep copy short.\n- [frontend] Use Livewire.\n\nGoal:\nAdd invoicing.'), seen[0].prompt);
+});
+
+test('the planning prompt has no preferences block without preferences', async (t) => {
+  const { input } = await fixture(t);
+  const seen = [];
+  await runPlanning({ ...input, preferences: [] }, { agent: async (request) => { seen.push(request); return { response: JSON.stringify(plan()), usage: emptyUsage() }; } });
+  assert.doesNotMatch(seen[0].prompt, /Owner preferences/);
+});
+
+for (const [name, preferences] of [
+  ['21 items', Array.from({ length: 21 }, () => ({ text: 'Short.', lead: null }))],
+  ['a multi-line item', [{ text: 'one\ntwo', lead: null }]],
+  ['a 301-character item', [{ text: 'a'.repeat(301), lead: null }]],
+  ['an unlisted lead', [{ text: 'Short.', lead: 'ghost' }]],
+  ['a missing lead', [{ text: 'Short.' }]],
+  ['a plain string', ['Short.']],
+]) {
+  test(`plan preferences with ${name} are rejected`, async (t) => {
+    const { input } = await fixture(t);
+    assert.throws(() => validatePlanInput({ ...input, preferences }), /^Error: preferences must list at most 20 single-line items of at most 300 characters\.$/);
+  });
+}
+
 test('the planning worktree is removed when the agent throws', async (t) => {
   const { input, repositoryPath, environment } = await fixture(t);
   const result = await runPlanning(input, { agent: async () => { throw new Error('agent crashed'); } });

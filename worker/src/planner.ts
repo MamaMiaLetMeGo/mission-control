@@ -5,7 +5,7 @@ import { createCodexAgent } from './agents.js';
 import { git, safeEnvironment } from './process.js';
 import { acquireRepositoryLock, addUsage, enforceTokenLimit, repositoryLockTimeoutMs, type RunOptions } from './runner.js';
 import { emptyUsage, type Emit, type TokenUsage } from './types.js';
-import { codePoints, isWithin, redact } from './validation.js';
+import { codePoints, isWithin, preferencesMessage, redact, validPreferenceText } from './validation.js';
 
 export interface PlanLead {
   key: string;
@@ -24,6 +24,8 @@ export interface PlanInput {
   maxRuntimeSeconds: number;
   maxTokens: number;
   model?: string;
+  /** The owner's active standing preferences; `lead` is null for all leads or a key from `leads`. */
+  preferences?: { text: string; lead: string | null }[];
 }
 
 export type BriefPriority = 'urgent' | 'high' | 'normal' | 'low';
@@ -120,6 +122,16 @@ export function validatePlanInput(value: unknown): PlanInput {
   if (input.model !== undefined && (typeof input.model !== 'string' || input.model.includes('\0'))) {
     throw new Error('model must be a string.');
   }
+  if (input.preferences !== undefined) {
+    const leadKeys = (input.leads as { key: string }[]).map((lead) => lead.key);
+    if (!Array.isArray(input.preferences) || input.preferences.length > 20 || input.preferences.some((preference) => {
+      const entry = preference as Record<string, unknown>;
+      return !entry || typeof entry !== 'object' || Array.isArray(entry) || !validPreferenceText(entry.text)
+        || (entry.lead !== null && (typeof entry.lead !== 'string' || !leadKeys.includes(entry.lead)));
+    })) {
+      throw new Error(preferencesMessage);
+    }
+  }
   return input as unknown as PlanInput;
 }
 
@@ -179,6 +191,7 @@ function planningPrompt(input: PlanInput): string {
     'Give each brief to the lead whose instructions fit it best, using the lead key exactly as listed. Use "after" only when a brief cannot be built until an earlier brief is merged; list the 1-based numbers of those earlier briefs.',
     'The overview is two to five sentences for the human owner: what will be done, in what order, and any risk.',
     `Leads:\n${input.leads.map((lead) => `- ${lead.key} (${lead.name}): ${lead.instructions}`).join('\n')}`,
+    ...(input.preferences?.length ? [`Owner preferences. Write briefs that respect these:\n${input.preferences.map((preference) => `- [${preference.lead ?? 'all leads'}] ${preference.text}`).join('\n')}`] : []),
     `Goal:\n${input.goal}`,
   ].join('\n\n');
 }

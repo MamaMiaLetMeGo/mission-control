@@ -275,6 +275,83 @@ test('the implementation prompt carries the lead and its instructions', async (t
   assert.doesNotMatch(prompts.find((request) => request.role === 'review').prompt, /Prefer existing components/);
 });
 
+const preferenceBlock = (heading, items) => `${heading}\n${items.map((item) => `- ${item}`).join('\n')}`;
+const implementationHeading = 'Owner preferences. These are the human owner\'s standing preferences, learned from past decisions. Follow them unless this task\'s request or acceptance criteria say otherwise:';
+const reviewHeading = 'Owner preferences. Request changes when the diff clearly goes against one of these, and name the preference in the finding:';
+
+test('owner preferences reach the implementation, fix and review prompts but never the security prompt', async (t) => {
+  const { input } = await fixture(t);
+  const requests = [];
+  const preferences = ['Use Livewire for forms.', 'Keep copy short.'];
+  const result = await runMission({ ...input, reviewRounds: 1, preferences, lead: { name: 'Design Lead', instructions: 'Prefer existing components.' } }, {
+    agent: scriptedAgent({
+      implementations: [
+        async (directory) => { await writeFile(path.join(directory, 'feature.txt'), 'implemented\n'); return { response: 'Done.', usage: emptyUsage() }; },
+        async (directory) => { await writeFile(path.join(directory, 'edge.txt'), 'fixed\n'); return { response: 'Fixed.', usage: emptyUsage() }; },
+      ],
+      reviews: [changesRequested('Fix it.', ['Broken.']), passed()],
+    }, requests),
+  });
+  assert.equal(result.success, true, result.error);
+  const block = preferenceBlock(implementationHeading, preferences);
+  for (const prompt of requests.filter((request) => request.role === 'implementation').map((request) => request.prompt)) {
+    assert.ok(prompt.includes(`Lead instructions:\nPrefer existing components.\n\n${block}\n\n`), prompt);
+  }
+  for (const prompt of requests.filter((request) => request.role === 'review').map((request) => request.prompt)) {
+    assert.ok(prompt.includes(`${preferenceBlock(reviewHeading, preferences)}\n\nTask title: Add a feature`), prompt);
+  }
+  const security = requests.filter((request) => request.role === 'security');
+  assert.ok(security.length > 0);
+  for (const request of security) {
+    assert.doesNotMatch(request.prompt, /Use Livewire|Owner preferences/);
+  }
+});
+
+test('prompts have no preferences block when none are given', async (t) => {
+  const { input } = await fixture(t);
+  const requests = [];
+  const base = successfulAgent();
+  const result = await runMission({ ...input, preferences: [] }, { agent: async (request) => { requests.push(request); return base(request); } });
+  assert.equal(result.success, true, result.error);
+  for (const request of requests) {
+    assert.doesNotMatch(request.prompt, /Owner preferences/);
+  }
+});
+
+test('the review prompt of a refresh carries the preferences', async (t) => {
+  const { input } = await fixture(t);
+  const original = await runMission(input, { agent: successfulAgent() });
+  const requests = [];
+  const base = successfulAgent();
+  const refreshed = await runMission(
+    { ...input, mode: 'refresh', sourceRevision: original.revision, previousSummary: original.summary, preferences: ['Keep copy short.'] },
+    { agent: async (request) => { requests.push(request); return base(request); } },
+  );
+  assert.equal(refreshed.success, true, refreshed.error);
+  assert.equal(requests.some((request) => request.role === 'implementation'), false);
+  assert.match(requests.find((request) => request.role === 'review').prompt, /Owner preferences\. Request changes[^\n]*\n- Keep copy short\.\n\nTask title:/);
+});
+
+for (const [name, preferences] of [
+  ['21 items', Array.from({ length: 21 }, () => 'Short.')],
+  ['a multi-line item', ['one\ntwo']],
+  ['an item with a control character', ['a\u0007b']],
+  ['an item with a Unicode line separator', ['a\u2028b']],
+  ['a 301-character item', ['a'.repeat(301)]],
+  ['an empty item', ['']],
+  ['a non-array value', 'Short.'],
+]) {
+  test(`preferences with ${name} are rejected`, async (t) => {
+    const { input } = await fixture(t);
+    assert.throws(() => validateInput({ ...input, preferences }), /^Error: preferences must list at most 20 single-line items of at most 300 characters\.$/);
+  });
+}
+
+test('20 preferences of 300 characters are accepted', async (t) => {
+  const { input } = await fixture(t);
+  assert.doesNotThrow(() => validateInput({ ...input, preferences: Array.from({ length: 20 }, () => '😀'.repeat(300)) }));
+});
+
 test('a lead with empty instructions is rejected', async (t) => {
   const { input } = await fixture(t);
   const result = await runMission({ ...input, lead: { name: 'Design Lead', instructions: '' } }, { agent: successfulAgent() });

@@ -330,6 +330,83 @@ PHP);
         }
     }
 
+    public function test_preferences_reach_matching_tasks_and_the_plan_but_not_other_leads_or_off_preferences(): void
+    {
+        $directory = storage_path('framework/testing/codex-process-'.Str::uuid());
+        mkdir($directory, 0700, true);
+        file_put_contents($directory.'/fixture.php', <<<'PHP'
+<?php
+file_put_contents(__DIR__.'/payload.json', stream_get_contents(STDIN));
+echo json_encode(['type' => 'result', 'success' => false, 'error' => 'stopped'])."\n";
+echo json_encode(['type' => 'plan', 'success' => true, 'overview' => 'Plan.', 'briefs' => []])."\n";
+PHP);
+        config(['mission.node_binary' => PHP_BINARY, 'mission.worker_path' => $directory.'/fixture.php']);
+        $design = Lead::query()->where('key', 'design')->firstOrFail();
+        $engineering = Lead::query()->where('key', 'engineering')->firstOrFail();
+        Preference::factory()->create(['text' => 'Keep copy short.']);
+        Preference::factory()->forLead($design)->create(['text' => 'Use the existing card component.']);
+        Preference::factory()->forLead($engineering)->off()->create(['text' => 'Never sent.']);
+        $settings = ['repository_path' => '/fixture/repository', 'base_branch' => 'main', 'test_command' => ['php', '-v'], 'max_runtime_seconds' => 60, 'max_tokens' => 1000];
+        $designRun = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'queued', 'lead_id' => $design->id]), 'task')->create(['settings' => $settings]);
+        $engineeringRun = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'queued', 'lead_id' => $engineering->id]), 'task')->create(['settings' => $settings]);
+        $refreshRun = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'queued', 'lead_id' => $design->id]), 'task')->create(['settings' => [...$settings, 'mode' => 'refresh', 'source_revision' => str_repeat('a', 40)]]);
+        $goal = Goal::factory()->queued()->create(['settings' => ['repository_path' => '/r', 'base_branch' => 'main', 'max_runtime_seconds' => 60, 'max_tokens' => 1000]]);
+        $read = fn (): array => json_decode(file_get_contents($directory.'/payload.json'), true);
+
+        try {
+            app(CodexProcess::class)->run($designRun, fn (array $event) => null);
+            $this->assertSame(['Keep copy short.', 'Use the existing card component.'], $read()['preferences']);
+
+            app(CodexProcess::class)->run($engineeringRun, fn (array $event) => null);
+            $this->assertSame(['Keep copy short.'], $read()['preferences']);
+
+            app(CodexProcess::class)->run($refreshRun, fn (array $event) => null);
+            $this->assertSame('refresh', $read()['mode']);
+            $this->assertSame(['Keep copy short.', 'Use the existing card component.'], $read()['preferences']);
+
+            app(CodexProcess::class)->plan($goal, fn (array $event) => null);
+            $this->assertSame([
+                ['text' => 'Keep copy short.', 'lead' => null],
+                ['text' => 'Use the existing card component.', 'lead' => 'design'],
+            ], $read()['preferences']);
+        } finally {
+            File::deleteDirectory($directory);
+        }
+    }
+
+    public function test_preferences_are_omitted_when_there_are_none_and_the_plan_drops_those_for_unsent_leads(): void
+    {
+        $directory = storage_path('framework/testing/codex-process-'.Str::uuid());
+        mkdir($directory, 0700, true);
+        file_put_contents($directory.'/fixture.php', <<<'PHP'
+<?php
+file_put_contents(__DIR__.'/payload.json', stream_get_contents(STDIN));
+echo json_encode(['type' => 'result', 'success' => false, 'error' => 'stopped'])."\n";
+echo json_encode(['type' => 'plan', 'success' => true, 'overview' => 'Plan.', 'briefs' => []])."\n";
+PHP);
+        config(['mission.node_binary' => PHP_BINARY, 'mission.worker_path' => $directory.'/fixture.php']);
+        $settings = ['repository_path' => '/fixture/repository', 'base_branch' => 'main', 'test_command' => ['php', '-v'], 'max_runtime_seconds' => 60, 'max_tokens' => 1000];
+        $run = AgentRun::factory()->for(MissionTask::factory()->state(['status' => 'queued']), 'task')->create(['settings' => $settings]);
+        $goal = Goal::factory()->queued()->create(['settings' => ['repository_path' => '/r', 'base_branch' => 'main', 'max_runtime_seconds' => 60, 'max_tokens' => 1000]]);
+        $read = fn (): array => json_decode(file_get_contents($directory.'/payload.json'), true);
+
+        try {
+            app(CodexProcess::class)->run($run, fn (array $event) => null);
+            $this->assertArrayNotHasKey('preferences', $read());
+            app(CodexProcess::class)->plan($goal, fn (array $event) => null);
+            $this->assertArrayNotHasKey('preferences', $read());
+
+            Lead::factory()->count(21)->create();
+            $unsent = Lead::query()->active()->get()->skip(20)->first();
+            Preference::factory()->forLead($unsent)->create(['text' => 'For a lead that is not sent.']);
+            app(CodexProcess::class)->plan($goal, fn (array $event) => null);
+            $this->assertCount(20, $read()['leads']);
+            $this->assertArrayNotHasKey('preferences', $read());
+        } finally {
+            File::deleteDirectory($directory);
+        }
+    }
+
     public function test_planning_without_a_plan_event_fails_with_the_worker_output(): void
     {
         $directory = storage_path('framework/testing/codex-process-'.Str::uuid());

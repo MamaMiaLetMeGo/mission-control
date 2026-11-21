@@ -32,6 +32,8 @@ export interface MissionInput {
   previousSummary?: string;
   /** How many times a sub-agent may fix the reviewer's findings before the run stops. Integer 0-3, defaults to 0; ignored in refresh mode. */
   reviewRounds?: number;
+  /** The owner's active standing preferences. At most 20, each a single line of 1-300 characters. */
+  preferences?: string[];
 }
 
 export interface TokenUsage {

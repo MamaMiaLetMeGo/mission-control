@@ -49,6 +49,10 @@ class CodexProcess
         if ($task->lead) {
             $payload['lead'] = ['name' => $task->lead->name, 'instructions' => $task->lead->instructions];
         }
+        $preferences = app(Brain::class)->forPrompt($task->lead);
+        if ($preferences !== []) {
+            $payload['preferences'] = $preferences;
+        }
         if ($task->goal && ($settings['mode'] ?? null) !== 'refresh') {
             $goal = mb_substr(str_replace("\0", '', (string) $task->goal->request), 0, 5000);
             $clean = fn (mixed $value, int $max): string => mb_substr(preg_replace('/[\x00-\x1F\x7F]/u', ' ', (string) $value) ?? '', 0, $max);
@@ -87,17 +91,26 @@ class CodexProcess
     public function plan(Goal $goal, Closure $onEvent): array
     {
         $settings = $goal->settings;
+        $leads = Lead::query()->active()->orderBy('id')->limit(20)->get();
         $payload = [
             'mode' => 'plan',
             'goalId' => $goal->id,
             'goal' => $goal->request,
-            'leads' => Lead::query()->active()->orderBy('id')->limit(20)->get()->map(fn (Lead $lead): array => ['key' => $lead->key, 'name' => $lead->name, 'instructions' => $lead->instructions])->all(),
+            'leads' => $leads->map(fn (Lead $lead): array => ['key' => $lead->key, 'name' => $lead->name, 'instructions' => $lead->instructions])->all(),
             'repositoryPath' => $settings['repository_path'],
             'baseBranch' => $settings['base_branch'],
             'worktreeRoot' => config('mission.worktree_root'),
             'maxRuntimeSeconds' => $settings['max_runtime_seconds'],
             'maxTokens' => $settings['max_tokens'],
         ];
+        $sentKeys = $leads->pluck('key')->all();
+        $preferences = array_values(array_filter(
+            app(Brain::class)->forPlanner(),
+            fn (array $preference): bool => $preference['lead'] === null || in_array($preference['lead'], $sentKeys, true),
+        ));
+        if ($preferences !== []) {
+            $payload['preferences'] = $preferences;
+        }
         if (! empty($settings['model'])) {
             $payload['model'] = $settings['model'];
         }
