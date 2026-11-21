@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\AgentRun;
+use App\Models\Goal;
 use App\Models\MissionSetting;
 use App\Services\RunSlots;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
@@ -53,6 +54,16 @@ class RunSlotsTest extends TestCase
     {
         AgentRun::factory()->count(2)->create(['status' => 'running']);
         AgentRun::factory()->create(['status' => 'queued']);
+
+        $this->assertSame(2, app(RunSlots::class)->busy());
+    }
+
+    public function test_busy_also_counts_goals_being_planned(): void
+    {
+        AgentRun::factory()->create(['status' => 'running']);
+        Goal::factory()->planning()->create();
+        Goal::factory()->queued()->create();
+        Goal::factory()->create();
 
         $this->assertSame(2, app(RunSlots::class)->busy());
     }

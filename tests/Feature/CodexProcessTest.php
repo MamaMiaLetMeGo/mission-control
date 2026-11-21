@@ -4,12 +4,14 @@ namespace Tests\Feature;
 
 use App\Jobs\RunMissionTask;
 use App\Models\AgentRun;
+use App\Models\Goal;
 use App\Models\Lead;
 use App\Models\MissionTask;
 use App\Services\CodexProcess;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Str;
+use RuntimeException;
 use Tests\TestCase;
 
 class CodexProcessTest extends TestCase
@@ -112,6 +114,70 @@ PHP);
             $this->assertArrayNotHasKey('mode', $payload);
             $this->assertArrayNotHasKey('sourceRevision', $payload);
             $this->assertArrayNotHasKey('previousSummary', $payload);
+        } finally {
+            File::deleteDirectory($directory);
+        }
+    }
+
+    public function test_planning_sends_the_goal_and_active_leads_and_returns_the_plan_event(): void
+    {
+        $directory = storage_path('framework/testing/codex-process-'.Str::uuid());
+        mkdir($directory, 0700, true);
+        file_put_contents($directory.'/fixture.php', <<<'PHP'
+<?php
+file_put_contents(__DIR__.'/payload.json', stream_get_contents(STDIN));
+echo json_encode(['type' => 'message', 'message' => 'Reading.'])."\n";
+echo json_encode(['type' => 'plan', 'success' => true, 'overview' => 'Plan.', 'briefs' => []])."\n";
+PHP);
+        config(['mission.node_binary' => PHP_BINARY, 'mission.worker_path' => $directory.'/fixture.php', 'mission.worktree_root' => '/fixture/worktrees']);
+        Lead::query()->where('key', 'design')->update(['is_active' => false]);
+        $settings = ['repository_path' => '/fixture/repository', 'base_branch' => 'main', 'max_runtime_seconds' => 60, 'max_tokens' => 1000, 'model' => 'test-model'];
+        $goal = Goal::factory()->queued()->create(['request' => 'Improve onboarding.', 'settings' => $settings]);
+        $events = [];
+
+        try {
+            $result = app(CodexProcess::class)->plan($goal, function (array $event) use (&$events): void {
+                $events[] = $event;
+            });
+
+            $payload = json_decode(file_get_contents($directory.'/payload.json'), true);
+            $this->assertSame('plan', $payload['mode']);
+            $this->assertSame($goal->id, $payload['goalId']);
+            $this->assertSame('Improve onboarding.', $payload['goal']);
+            $this->assertSame('/fixture/repository', $payload['repositoryPath']);
+            $this->assertSame('main', $payload['baseBranch']);
+            $this->assertSame('/fixture/worktrees', $payload['worktreeRoot']);
+            $this->assertSame(60, $payload['maxRuntimeSeconds']);
+            $this->assertSame(1000, $payload['maxTokens']);
+            $this->assertSame('test-model', $payload['model']);
+            $expected = Lead::query()->active()->get()->map(fn (Lead $lead): array => ['key' => $lead->key, 'name' => $lead->name, 'instructions' => $lead->instructions])->all();
+            $this->assertSame($expected, $payload['leads']);
+            $this->assertNotContains('design', array_column($payload['leads'], 'key'));
+            $this->assertSame('plan', $result['type']);
+            $this->assertSame('Plan.', $result['overview']);
+            $this->assertSame([['type' => 'message', 'message' => 'Reading.']], $events);
+        } finally {
+            File::deleteDirectory($directory);
+        }
+    }
+
+    public function test_planning_without_a_plan_event_fails_with_the_worker_output(): void
+    {
+        $directory = storage_path('framework/testing/codex-process-'.Str::uuid());
+        mkdir($directory, 0700, true);
+        file_put_contents($directory.'/fixture.php', <<<'PHP'
+<?php
+stream_get_contents(STDIN);
+echo json_encode(['type' => 'result', 'success' => true])."\n";
+fwrite(STDERR, 'boom');
+PHP);
+        config(['mission.node_binary' => PHP_BINARY, 'mission.worker_path' => $directory.'/fixture.php']);
+        $goal = Goal::factory()->queued()->create(['settings' => ['repository_path' => '/r', 'base_branch' => 'main', 'max_runtime_seconds' => 60, 'max_tokens' => 1000]]);
+
+        try {
+            $this->expectException(RuntimeException::class);
+            $this->expectExceptionMessage('The planner stopped without a plan. boom');
+            app(CodexProcess::class)->plan($goal, fn (array $event) => null);
         } finally {
             File::deleteDirectory($directory);
         }

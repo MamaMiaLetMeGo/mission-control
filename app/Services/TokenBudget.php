@@ -3,18 +3,22 @@
 namespace App\Services;
 
 use App\Models\AgentRun;
+use App\Models\Goal;
 
 class TokenBudget
 {
     public function __construct(private MissionSettings $settings) {}
 
     /**
-     * Input plus output tokens reported by every run created since the start of today.
+     * Input plus output tokens reported by every run and goal plan created since the start of today.
      */
     public function usedToday(): int
     {
-        return (int) AgentRun::query()->where('created_at', '>=', now()->startOfDay())->whereNotNull('usage')->pluck('usage')
-            ->sum(fn (mixed $usage): int => is_array($usage) ? (int) ($usage['input_tokens'] ?? 0) + (int) ($usage['output_tokens'] ?? 0) : 0);
+        $count = fn (mixed $usage): int => is_array($usage) ? (int) ($usage['input_tokens'] ?? 0) + (int) ($usage['output_tokens'] ?? 0) : 0;
+        $since = now()->startOfDay();
+
+        return (int) AgentRun::query()->where('created_at', '>=', $since)->whereNotNull('usage')->pluck('usage')->sum($count)
+            + (int) Goal::query()->where('created_at', '>=', $since)->whereNotNull('usage')->pluck('usage')->sum($count);
     }
 
     public function limit(): int
