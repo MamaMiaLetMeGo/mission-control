@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
+use RuntimeException;
 use Throwable;
 
 class ChiefOfStaff
@@ -21,6 +22,16 @@ class ChiefOfStaff
     public const MAX_OPEN_IDEAS = 10;
 
     public const MAX_IDEAS = 5;
+
+    /**
+     * The share of the daily token limit that ideas may use automatically, leaving the rest for the owner's goals.
+     */
+    public const IDEAS_TOKEN_SHARE = 0.5;
+
+    /**
+     * Minutes without a worker event after which a planning ideas run is treated as crashed.
+     */
+    public const STALE_IDEAS_MINUTES = 20;
 
     public function __construct(private MissionSettings $settings, private TokenBudget $tokens) {}
 
@@ -46,10 +57,11 @@ class ChiefOfStaff
     public function propose(bool $manual = false): ?Goal
     {
         return Cache::lock('mission-workflow', 120)->block(5, function () use ($manual): ?Goal {
+            $this->failStaleIdeasRuns();
             if (Goal::query()->where('source', 'ideas')->whereIn('status', ['queued', 'planning'])->exists()) {
                 return $this->refuseIdeas($manual, 'The leads are already working on ideas.');
             }
-            if (! $manual && (! $this->settings->all()['ideas_enabled'] || Goal::query()->where('source', 'ideas')->where('created_at', '>', now()->subHours(23))->exists())) {
+            if (! $manual && (! $this->settings->all()['ideas_enabled'] || $this->ideasShareUsed() || Goal::query()->where('source', 'ideas')->where('created_at', '>', now()->subHours(23))->exists())) {
                 return null;
             }
             if ($this->openIdeas() >= self::MAX_OPEN_IDEAS) {
@@ -86,7 +98,8 @@ class ChiefOfStaff
                 return 0;
             }
             $workflow = app(MissionWorkflow::class);
-            $candidates = MissionTask::query()->where('status', 'backlog')->whereNotNull('goal_id')
+            $ideasShareUsed = $this->ideasShareUsed();
+            $candidates = MissionTask::query()->with('goal')->where('status', 'backlog')->whereNotNull('goal_id')
                 ->orderByRaw('case when goal_id in (select id from goals where source = ?) then 1 else 0 end', ['ideas'])
                 ->orderByRaw("case priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end")
                 ->orderBy('goal_id')->orderBy('goal_position')->orderBy('id')->get();
@@ -94,7 +107,7 @@ class ChiefOfStaff
                 if ($started >= $capacity) {
                     break;
                 }
-                if ($task->waitingOn()->isNotEmpty()) {
+                if ($task->waitingOn()->isNotEmpty() || ($ideasShareUsed && $task->goal?->source === 'ideas')) {
                     continue;
                 }
                 try {
@@ -168,6 +181,27 @@ class ChiefOfStaff
 
             return $goal;
         });
+    }
+
+    /**
+     * Whether today's token use has reached the share set aside for ideas.
+     */
+    private function ideasShareUsed(): bool
+    {
+        return $this->tokens->usedToday() >= $this->tokens->limit() * self::IDEAS_TOKEN_SHARE;
+    }
+
+    /**
+     * Fail ideas runs whose planning worker has gone silent, so they stop blocking new runs and agent slots. The worker
+     * updates the goal on every event, so updated_at shows whether it is still alive.
+     */
+    private function failStaleIdeasRuns(): void
+    {
+        $staleIds = Goal::query()->where('source', 'ideas')->where('status', 'planning')
+            ->where('updated_at', '<', now()->subMinutes(self::STALE_IDEAS_MINUTES))->pluck('id');
+        foreach ($staleIds as $goalId) {
+            (new PlanGoal($goalId))->failed(new RuntimeException(PlanGoal::INTERRUPTED_IDEAS));
+        }
     }
 
     /**

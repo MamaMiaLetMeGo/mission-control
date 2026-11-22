@@ -72,7 +72,7 @@ class IdeaControllerTest extends TestCase
 
         $this->get(route('ideas.index'))
             ->assertSee('http-equiv="refresh" content="5"', false)
-            ->assertSee('The leads are looking at the project. This page refreshes automatically.');
+            ->assertSee('The leads are looking at the project. This page refreshes automatically. To dismiss or start an idea meanwhile, open it.');
     }
 
     public function test_a_working_ideas_run_hides_the_actions_on_earlier_ideas(): void
@@ -100,6 +100,14 @@ class IdeaControllerTest extends TestCase
         $this->assertMatchesRegularExpression('/id="dismiss-feedback-'.$second->id.'"[^>]*value="Half-typed reason"/', $response->getContent());
         $this->assertDoesNotMatchRegularExpression('/id="dismiss-feedback-'.$first->id.'"[^>]*value="Half-typed reason"/', $response->getContent());
         $this->assertSame(1, substr_count($response->getContent(), 'Half-typed reason'));
+    }
+
+    public function test_an_old_idea_posted_as_a_list_does_not_break_the_page(): void
+    {
+        MissionTask::factory()->forGoal(Goal::factory()->ideas()->create())->create(['status' => 'backlog']);
+
+        $this->withSession(['_old_input' => ['idea' => ['1'], 'feedback' => 'Half-typed reason']])
+            ->get(route('ideas.index'))->assertOk()->assertDontSee('Half-typed reason');
     }
 
     public function test_the_dismiss_form_names_its_idea_and_the_decision_accepts_it(): void
@@ -209,6 +217,14 @@ class IdeaControllerTest extends TestCase
             ->assertSee('The leads are looking at the project. This page refreshes automatically.')
             ->assertDontSee('Back to queue')
             ->assertDontSee('The Chief of Staff is working on this.');
+
+        $failed = Goal::factory()->ideas()->failed()->create(['error' => 'The leads gave up.', 'usage' => ['input_tokens' => 1000, 'output_tokens' => 234]]);
+
+        $this->get(route('goals.show', $failed))->assertOk()
+            ->assertSee('The ideas run needs attention')
+            ->assertSee('1,234 tokens used looking for ideas')
+            ->assertDontSee('The plan needs attention')
+            ->assertDontSee('tokens used planning');
     }
 
     private function readyEnvironment(): void

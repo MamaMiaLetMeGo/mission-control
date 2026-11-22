@@ -56,7 +56,7 @@ Artisan::command('mission:recover {--older-than=20 : Only mark runs older than t
     $this->info('Marked '.$recovered.' interrupted runs as failed. No tasks were restarted.');
     $goals = Goal::query()->whereIn('status', $jobPending ? ['planning'] : ['queued', 'planning'])->where('updated_at', '<', now()->subMinutes($minutes))->pluck('source', 'id');
     foreach ($goals as $goalId => $source) {
-        (new PlanGoal($goalId))->failed(new RuntimeException($source === 'ideas' ? 'The ideas run was interrupted. Press "Get ideas now" to try again.' : 'Planning was interrupted. Give the goal again.'));
+        (new PlanGoal($goalId))->failed(new RuntimeException($source === 'ideas' ? PlanGoal::INTERRUPTED_IDEAS : 'Planning was interrupted. Give the goal again.'));
     }
     $this->info('Marked '.$goals->count().' interrupted goal plan(s) as failed.');
 })->purpose('Recover stale mission runs without repeating external actions');

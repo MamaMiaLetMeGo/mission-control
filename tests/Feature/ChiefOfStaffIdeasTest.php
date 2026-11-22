@@ -223,6 +223,73 @@ class ChiefOfStaffIdeasTest extends TestCase
         $this->assertSame(ChiefOfStaff::MAX_IDEAS, $goal->tasks()->count());
     }
 
+    public function test_an_automatic_call_leaves_the_second_half_of_the_token_budget_to_the_owner(): void
+    {
+        Queue::fake();
+        $this->readyEnvironment();
+        config(['mission.daily_token_limit' => 10000]);
+        AgentRun::factory()->create(['status' => 'completed', 'usage' => ['input_tokens' => 4000, 'output_tokens' => 999]]);
+
+        $this->assertNotNull(app(ChiefOfStaff::class)->propose());
+        Goal::query()->delete();
+
+        AgentRun::factory()->create(['status' => 'completed', 'usage' => ['input_tokens' => 1, 'output_tokens' => 0]]);
+
+        $this->assertNull(app(ChiefOfStaff::class)->propose());
+        $this->assertDatabaseCount('goals', 0);
+        $this->assertNotNull(app(ChiefOfStaff::class)->propose(manual: true));
+        $this->assertDatabaseCount('goals', 1);
+    }
+
+    public function test_a_stale_planning_ideas_run_is_failed_before_an_automatic_call(): void
+    {
+        Queue::fake();
+        $this->readyEnvironment();
+        $stale = $this->planningIdeasRun(minutesSilent: 21);
+
+        $this->assertNull(app(ChiefOfStaff::class)->propose());
+
+        $stale->refresh();
+        $this->assertSame('failed', $stale->status);
+        $this->assertSame(PlanGoal::INTERRUPTED_IDEAS, $stale->error);
+        $this->assertSame('The ideas run was interrupted. Press "Get ideas now" to try again.', $stale->error);
+        $this->assertDatabaseCount('goals', 1);
+    }
+
+    public function test_a_stale_planning_ideas_run_is_failed_before_a_manual_call(): void
+    {
+        Queue::fake();
+        $this->readyEnvironment();
+        $stale = $this->planningIdeasRun(minutesSilent: 21);
+
+        $goal = app(ChiefOfStaff::class)->propose(manual: true);
+
+        $this->assertSame('failed', $stale->refresh()->status);
+        $this->assertSame('queued', $goal->status);
+        $this->assertDatabaseCount('goals', 2);
+    }
+
+    public function test_a_recently_active_planning_ideas_run_still_blocks(): void
+    {
+        Queue::fake();
+        $this->readyEnvironment();
+        $active = $this->planningIdeasRun(minutesSilent: 5);
+
+        $this->assertRefused('The leads are already working on ideas.');
+        $this->assertSame('planning', $active->refresh()->status);
+    }
+
+    public function test_a_stale_planning_owner_goal_is_left_alone(): void
+    {
+        Queue::fake();
+        $this->readyEnvironment();
+        $owner = Goal::factory()->planning()->create();
+        Goal::query()->whereKey($owner->id)->toBase()->update(['updated_at' => now()->subMinutes(30)]);
+
+        $this->assertNotNull(app(ChiefOfStaff::class)->propose());
+        $this->assertSame('planning', $owner->refresh()->status);
+    }
+
     public function test_an_ideas_plan_may_have_no_briefs(): void
     {
         $goal = Goal::factory()->ideas()->planning()->create(['settings' => ['ideas_per_run' => 3]]);
@@ -272,6 +339,14 @@ class ChiefOfStaffIdeasTest extends TestCase
         $this->assertSame('0 * * * *', $event->expression);
         $this->assertTrue($event->withoutOverlapping);
         $this->assertSame(5, $event->expiresAt);
+    }
+
+    private function planningIdeasRun(int $minutesSilent): Goal
+    {
+        $goal = Goal::factory()->ideas()->planning()->create();
+        Goal::query()->whereKey($goal->id)->toBase()->update(['updated_at' => now()->subMinutes($minutesSilent)]);
+
+        return $goal;
     }
 
     /** @return list<string> */

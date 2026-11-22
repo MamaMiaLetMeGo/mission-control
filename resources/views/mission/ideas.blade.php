@@ -18,7 +18,7 @@
 @endif
 @if($run)
     @if(in_array($run->status, ['queued', 'planning'], true))
-    <p class="text-xs text-muted mb-6" role="status">The leads are looking at the project. This page refreshes automatically.</p>
+    <p class="text-xs text-muted mb-6" role="status">The leads are looking at the project. This page refreshes automatically. To dismiss or start an idea meanwhile, open it.</p>
     @elseif($run->status === 'failed')
     <div class="setup-notice"><div class="flex-1 min-w-0"><strong>The last ideas run needs attention</strong>@if($run->error)<p>{{ $run->error }}</p>@endif</div></div>
     @elseif($run->status === 'planned')
@@ -39,7 +39,7 @@
             @if($task->status === 'backlog' && ! $isWorking)
             <form action="{{ route('tasks.decide', $task) }}" method="POST" class="flex items-center gap-2">@csrf
                 <input type="hidden" name="action" value="reject"><input type="hidden" name="idea" value="{{ $task->id }}">
-                <div class="field"><label for="dismiss-feedback-{{ $task->id }}" class="sr-only">Why not?</label><input id="dismiss-feedback-{{ $task->id }}" name="feedback" value="{{ (string) old('idea') === (string) $task->id ? old('feedback') : '' }}" maxlength="10000" required placeholder="Why not? This teaches the Brain."></div>
+                <div class="field"><label for="dismiss-feedback-{{ $task->id }}" class="sr-only">Why not?</label><input id="dismiss-feedback-{{ $task->id }}" name="feedback" value="{{ is_scalar(old('idea')) && (string) old('idea') === (string) $task->id ? old('feedback') : '' }}" maxlength="10000" required placeholder="Why not? This teaches the Brain."></div>
                 <button class="button button-small button-quiet" type="submit">Dismiss</button>
             </form>
             <form action="{{ route('tasks.run', $task) }}" method="POST">@csrf<button class="button button-small button-secondary" type="submit">Start now</button></form>

@@ -15,10 +15,10 @@
 @endphp
 <a href="{{ $isIdeas ? route('ideas.index') : route('dashboard') }}" class="text-link text-muted mb-7">@include('mission.icon', ['name' => 'back', 'class' => 'size-4']){{ $isIdeas ? 'Back to ideas' : 'Back to queue' }}</a>
 <div class="page-heading items-start">
-    <div class="min-w-0"><div class="flex flex-wrap items-center gap-3 mb-3"><p class="eyebrow mb-0">{{ $isIdeas ? 'Ideas' : 'Goal' }}</p><span class="status-badge status-{{ $goal->status }}">{{ $goalLabels[$goal->status] ?? ucfirst($goal->status) }}</span></div><h1 class="task-page-title">{{ $goal->request }}</h1>@if($tokens !== null)<p class="page-description">{{ number_format($tokens) }} tokens used planning</p>@endif</div>
+    <div class="min-w-0"><div class="flex flex-wrap items-center gap-3 mb-3"><p class="eyebrow mb-0">{{ $isIdeas ? 'Ideas' : 'Goal' }}</p><span class="status-badge status-{{ $goal->status }}">{{ $goalLabels[$goal->status] ?? ucfirst($goal->status) }}</span></div><h1 class="task-page-title">{{ $goal->request }}</h1>@if($tokens !== null)<p class="page-description">{{ number_format($tokens) }} {{ $isIdeas ? 'tokens used looking for ideas' : 'tokens used planning' }}</p>@endif</div>
 </div>
 @if($goal->status === 'failed' && $goal->error)
-<div class="setup-notice"><div class="flex-1 min-w-0"><strong>The plan needs attention</strong><p>{{ $goal->error }}</p></div></div>
+<div class="setup-notice"><div class="flex-1 min-w-0"><strong>{{ $isIdeas ? 'The ideas run needs attention' : 'The plan needs attention' }}</strong><p>{{ $goal->error }}</p></div></div>
 @endif
 @if($goal->overview)
 <section class="panel mb-6"><div class="panel-heading"><h2>Overview</h2></div><p class="p-6 text-sm leading-relaxed whitespace-pre-line">{{ $goal->overview }}</p></section>

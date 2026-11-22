@@ -22,6 +22,8 @@ class PlanGoal implements ShouldQueue
 
     private const UNUSABLE_PLAN = 'The Chief of Staff returned a plan that could not be used. Give the goal again.';
 
+    public const INTERRUPTED_IDEAS = 'The ideas run was interrupted. Press "Get ideas now" to try again.';
+
     private const UNUSABLE_IDEAS = 'The leads returned ideas that could not be used. Press "Get ideas now" to try again.';
 
     /**
