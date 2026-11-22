@@ -18,6 +18,10 @@ class ChiefOfStaff
 {
     public const MAX_BRIEFS = 8;
 
+    public const MAX_OPEN_IDEAS = 10;
+
+    public const MAX_IDEAS = 5;
+
     public function __construct(private MissionSettings $settings, private TokenBudget $tokens) {}
 
     /**
@@ -26,26 +30,37 @@ class ChiefOfStaff
     public function start(string $request): Goal
     {
         return Cache::lock('mission-workflow', 120)->block(5, function () use ($request): Goal {
-            $readiness = $this->settings->readiness();
-            if (! $readiness['ready']) {
-                $this->reject(implode(' ', $readiness['issues']));
+            $refusal = $this->refusalToPlan('Add an active lead in Settings before giving a goal.');
+            if ($refusal !== null) {
+                $this->reject($refusal);
             }
-            if ($this->tokens->exhausted()) {
-                $this->reject('The daily token limit of '.$this->tokens->limit().' has been reached. Raise it in Settings or wait until tomorrow.');
-            }
-            if (! Lead::query()->active()->exists()) {
-                $this->reject('Add an active lead in Settings before giving a goal.');
-            }
-            $settings = $this->settings->all();
-            $repository = realpath($settings['repository_path']);
-            $settings['repository_path'] = $repository !== false ? $repository : $settings['repository_path'];
 
-            return DB::transaction(function () use ($request, $settings): Goal {
-                $goal = Goal::query()->create(['request' => $request, 'status' => 'queued', 'settings' => $settings, 'events' => []]);
-                PlanGoal::dispatch($goal->id)->afterCommit();
+            return $this->queueGoal(['request' => $request]);
+        });
+    }
 
-                return $goal;
-            });
+    /**
+     * Ask the leads for ideas. An automatic call returns null when no ideas run is due or one is refused; a manual
+     * call skips the daily schedule and throws a ValidationException explaining any refusal.
+     */
+    public function propose(bool $manual = false): ?Goal
+    {
+        return Cache::lock('mission-workflow', 120)->block(5, function () use ($manual): ?Goal {
+            if (Goal::query()->where('source', 'ideas')->whereIn('status', ['queued', 'planning'])->exists()) {
+                return $this->refuseIdeas($manual, 'The leads are already working on ideas.');
+            }
+            if (! $manual && (! $this->settings->all()['ideas_enabled'] || Goal::query()->where('source', 'ideas')->where('created_at', '>', now()->subHours(23))->exists())) {
+                return null;
+            }
+            if ($this->openIdeas() >= self::MAX_OPEN_IDEAS) {
+                return $this->refuseIdeas($manual, self::MAX_OPEN_IDEAS.' ideas are still open. Review or dismiss some before asking for more.');
+            }
+            $refusal = $this->refusalToPlan('Add an active lead in Settings before asking for ideas.');
+            if ($refusal !== null) {
+                return $this->refuseIdeas($manual, $refusal);
+            }
+
+            return $this->queueGoal(['source' => 'ideas', 'request' => 'Ideas from the leads']);
         });
     }
 
@@ -72,6 +87,7 @@ class ChiefOfStaff
             }
             $workflow = app(MissionWorkflow::class);
             $candidates = MissionTask::query()->where('status', 'backlog')->whereNotNull('goal_id')
+                ->orderByRaw('case when goal_id in (select id from goals where source = ?) then 1 else 0 end', ['ideas'])
                 ->orderByRaw("case priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 else 3 end")
                 ->orderBy('goal_id')->orderBy('goal_position')->orderBy('id')->get();
             foreach ($candidates as $task) {
@@ -106,9 +122,13 @@ class ChiefOfStaff
      */
     public function createTasks(Goal $goal, array $plan): void
     {
-        $briefs = $this->validated($plan);
+        $isIdeas = $goal->source === 'ideas';
+        if ($isIdeas && is_array($plan['briefs'] ?? null) && array_is_list($plan['briefs'])) {
+            $plan['briefs'] = array_slice($plan['briefs'], 0, max(1, min(self::MAX_IDEAS, (int) ($goal->settings['ideas_per_run'] ?? 3))));
+        }
+        $briefs = $this->validated($plan, $isIdeas ? 0 : 1);
         $leads = Lead::query()->active()->pluck('id', 'key');
-        DB::transaction(function () use ($goal, $plan, $briefs, $leads): void {
+        DB::transaction(function () use ($goal, $plan, $briefs, $leads, $isIdeas): void {
             $ids = [];
             foreach ($briefs as $index => $brief) {
                 $task = MissionTask::query()->create([
@@ -118,9 +138,9 @@ class ChiefOfStaff
                     'title' => $brief['title'],
                     'request' => $brief['request'],
                     'acceptance_criteria' => $brief['acceptanceCriteria'],
-                    'priority' => $brief['priority'],
+                    'priority' => $isIdeas && $brief['priority'] === 'urgent' ? 'high' : $brief['priority'],
                     'status' => 'backlog',
-                    'depends_on' => $brief['after'] === [] ? null : array_map(fn (int $position): int => $ids[$position], $brief['after']),
+                    'depends_on' => $isIdeas || $brief['after'] === [] ? null : array_map(fn (int $position): int => $ids[$position], $brief['after']),
                 ]);
                 $ids[$index + 1] = $task->id;
             }
@@ -129,18 +149,65 @@ class ChiefOfStaff
     }
 
     /**
+     * Record a queued goal with a snapshot of the settings and queue its planning once the goal is saved.
+     *
+     * @param  array{request: string, source?: string}  $attributes
+     */
+    private function queueGoal(array $attributes): Goal
+    {
+        $settings = $this->settings->all();
+        $repository = realpath($settings['repository_path']);
+        $settings['repository_path'] = $repository !== false ? $repository : $settings['repository_path'];
+
+        return DB::transaction(function () use ($attributes, $settings): Goal {
+            $goal = Goal::query()->create([...$attributes, 'status' => 'queued', 'settings' => $settings, 'events' => []]);
+            PlanGoal::dispatch($goal->id)->afterCommit();
+
+            return $goal;
+        });
+    }
+
+    /**
+     * Why the Chief of Staff cannot plan right now, or null when it can.
+     */
+    private function refusalToPlan(string $noLeadMessage): ?string
+    {
+        $readiness = $this->settings->readiness();
+        if (! $readiness['ready']) {
+            return implode(' ', $readiness['issues']);
+        }
+        if ($this->tokens->exhausted()) {
+            return 'The daily token limit of '.$this->tokens->limit().' has been reached. Raise it in Settings or wait until tomorrow.';
+        }
+        if (! Lead::query()->active()->exists()) {
+            return $noLeadMessage;
+        }
+
+        return null;
+    }
+
+    /**
+     * Idea tasks still waiting on the owner or an agent: everything not merged or rejected.
+     */
+    private function openIdeas(): int
+    {
+        return MissionTask::query()->whereNotIn('status', ['merged', 'rejected'])
+            ->whereHas('goal', fn ($query) => $query->where('source', 'ideas'))->count();
+    }
+
+    /**
      * @param  array<string, mixed>  $plan
      * @return list<array{lead: string, title: string, request: string, acceptanceCriteria: string, priority: string, after: list<int>}>
      */
-    private function validated(array $plan): array
+    private function validated(array $plan, int $minimumBriefs = 1): array
     {
         $overview = $plan['overview'] ?? null;
         $briefs = $plan['briefs'] ?? null;
         if (! is_string($overview) || ! $this->within($overview, 4000)) {
             $this->invalid('The overview must be 1 to 4000 characters.');
         }
-        if (! is_array($briefs) || ! array_is_list($briefs) || count($briefs) < 1 || count($briefs) > self::MAX_BRIEFS) {
-            $this->invalid('The plan must have 1 to '.self::MAX_BRIEFS.' briefs.');
+        if (! is_array($briefs) || ! array_is_list($briefs) || count($briefs) < $minimumBriefs || count($briefs) > self::MAX_BRIEFS) {
+            $this->invalid('The plan must have '.$minimumBriefs.' to '.self::MAX_BRIEFS.' briefs.');
         }
         $keys = Lead::query()->active()->pluck('key')->all();
         $checked = [];
@@ -185,6 +252,18 @@ class ChiefOfStaff
     private function invalid(string $message): never
     {
         throw new InvalidArgumentException($message);
+    }
+
+    /**
+     * An automatic ideas call gives up quietly; a manual one explains why.
+     */
+    private function refuseIdeas(bool $manual, string $message): null
+    {
+        if ($manual) {
+            throw ValidationException::withMessages(['ideas' => $message]);
+        }
+
+        return null;
     }
 
     private function reject(string $message): never

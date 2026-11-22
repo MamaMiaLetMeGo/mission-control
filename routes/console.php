@@ -7,6 +7,7 @@ use App\Models\AgentRun;
 use App\Models\BrainRun;
 use App\Models\Goal;
 use App\Services\ChiefOfStaff;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schedule;
@@ -64,4 +65,14 @@ Artisan::command('mission:dispatch', function (ChiefOfStaff $chief): void {
     $this->info('Started '.$chief->dispatch().' goal task(s).');
 })->purpose('Start goal tasks that are ready while an agent is free');
 
+Artisan::command('mission:ideas', function (ChiefOfStaff $chief): void {
+    try {
+        $goal = $chief->propose();
+    } catch (LockTimeoutException) {
+        $goal = null;
+    }
+    $this->info($goal ? 'Asked the leads for ideas.' : 'No ideas run is due.');
+})->purpose('Ask the leads for ideas once a day');
+
 Schedule::command('mission:dispatch')->everyMinute()->withoutOverlapping(5);
+Schedule::command('mission:ideas')->hourly()->withoutOverlapping(5);

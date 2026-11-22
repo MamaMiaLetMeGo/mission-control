@@ -56,6 +56,33 @@ class ChiefOfStaffDispatchTest extends TestCase
         $this->assertSame([$high->id, $a->id, $c->id, $b->id], $this->queued);
     }
 
+    public function test_owner_goal_tasks_start_before_idea_tasks_whatever_their_priority(): void
+    {
+        config(['mission.max_parallel_runs' => 1]);
+        $this->recordingWorkflow();
+        $idea = MissionTask::factory()->forGoal(Goal::factory()->ideas()->create())->create(['priority' => 'high']);
+        $owner = MissionTask::factory()->forGoal(Goal::factory()->create())->create(['priority' => 'low']);
+
+        $this->assertSame(1, app(ChiefOfStaff::class)->dispatch());
+
+        $this->assertSame([$owner->id], $this->queued);
+        $this->assertSame('backlog', $idea->refresh()->status);
+    }
+
+    public function test_idea_tasks_keep_the_usual_order_among_themselves(): void
+    {
+        config(['mission.max_parallel_runs' => 3]);
+        $this->recordingWorkflow();
+        $ideas = Goal::factory()->ideas()->create();
+        $normal = MissionTask::factory()->forGoal($ideas, 1)->create();
+        $high = MissionTask::factory()->forGoal($ideas, 2)->create(['priority' => 'high']);
+        $owner = MissionTask::factory()->forGoal(Goal::factory()->create())->create(['priority' => 'low']);
+
+        $this->assertSame(3, app(ChiefOfStaff::class)->dispatch());
+
+        $this->assertSame([$owner->id, $high->id, $normal->id], $this->queued);
+    }
+
     public function test_queued_goals_use_capacity_and_capacity_never_goes_below_zero(): void
     {
         config(['mission.max_parallel_runs' => 1]);
