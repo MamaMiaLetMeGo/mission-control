@@ -111,11 +111,34 @@ class CodexProcess
         if ($preferences !== []) {
             $payload['preferences'] = $preferences;
         }
+        if ($goal->source === 'ideas') {
+            $payload['kind'] = 'ideas';
+            $payload['maxIdeas'] = max(1, min(5, (int) ($settings['ideas_per_run'] ?? 3)));
+            $avoid = $this->recentTaskTitles();
+            if ($avoid !== []) {
+                $payload['avoid'] = $avoid;
+            }
+        }
         if (! empty($settings['model'])) {
             $payload['model'] = $settings['model'];
         }
 
         return $this->stream($payload, $settings['max_runtime_seconds'], 'plan', $onEvent, 'The planner stopped without a plan. ');
+    }
+
+    /**
+     * Titles of the 60 most recent tasks, newest first, each cleaned to one line of at most 200 characters, so the leads do not propose existing work again.
+     *
+     * @return array<int, string>
+     */
+    private function recentTaskTitles(): array
+    {
+        $brain = app(Brain::class);
+
+        return MissionTask::query()->latest()->latest('id')->limit(60)->pluck('title')
+            ->map(fn (mixed $title): string => trim(mb_substr($brain->clean((string) $title), 0, 200)))
+            ->filter(fn (string $title): bool => $title !== '')
+            ->values()->all();
     }
 
     /**

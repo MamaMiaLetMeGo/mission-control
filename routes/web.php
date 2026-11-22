@@ -4,6 +4,7 @@ use App\Http\Controllers\BrainController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DesktopHealthController;
 use App\Http\Controllers\GoalController;
+use App\Http\Controllers\IdeaController;
 use App\Http\Controllers\LeadController;
 use App\Http\Controllers\MissionPreviewController;
 use App\Http\Controllers\MissionSettingController;
@@ -48,6 +49,8 @@ Route::post('/tasks/{task}/production/close-conflict', [ProductionPublicationCon
 Route::get('/tasks/{task}/production/diff', [ProductionPublicationController::class, 'diff'])->name('tasks.production.diff');
 Route::post('/goals', [GoalController::class, 'store'])->name('goals.store');
 Route::get('/goals/{goal}', [GoalController::class, 'show'])->name('goals.show');
+Route::get('/ideas', [IdeaController::class, 'index'])->name('ideas.index');
+Route::post('/ideas', [IdeaController::class, 'store'])->name('ideas.store');
 Route::get('/settings', [MissionSettingController::class, 'edit'])->name('settings.edit');
 Route::post('/settings', [MissionSettingController::class, 'update'])->name('settings.update');
 Route::post('/leads', [LeadController::class, 'store'])->name('leads.store');

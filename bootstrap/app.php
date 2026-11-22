@@ -32,7 +32,7 @@ return Application::configure(basePath: dirname(__DIR__))
             }
 
             return back()->withErrors(['workflow' => $message])->withInput($request->only([
-                'title', 'request', 'acceptance_criteria', 'area', 'priority', 'action', 'feedback',
+                'title', 'request', 'acceptance_criteria', 'area', 'priority', 'action', 'feedback', 'idea',
                 'revision', 'plan_hash', 'scope', 'additional_paths', 'evidence_file', 'pr_number', 'head_revision',
                 'repository_path', 'base_branch', 'model', 'test_command', 'max_runtime_seconds', 'max_tokens', 'daily_run_limit',
                 'preview_enabled', 'preview_driver', 'preview_directory', 'preview_command', 'preview_paths', 'preview_ttl_seconds',

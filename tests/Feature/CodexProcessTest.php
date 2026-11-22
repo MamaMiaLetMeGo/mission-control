@@ -275,6 +275,84 @@ PHP);
         }
     }
 
+    public function test_planning_an_ideas_goal_sends_the_ideas_kind_a_clamped_limit_and_cleaned_recent_titles(): void
+    {
+        $directory = storage_path('framework/testing/codex-process-'.Str::uuid());
+        mkdir($directory, 0700, true);
+        file_put_contents($directory.'/fixture.php', <<<'PHP'
+<?php
+file_put_contents(__DIR__.'/payload.json', stream_get_contents(STDIN));
+echo json_encode(['type' => 'plan', 'success' => true, 'overview' => 'Looked.', 'briefs' => []])."\n";
+PHP);
+        config(['mission.node_binary' => PHP_BINARY, 'mission.worker_path' => $directory.'/fixture.php']);
+        $settings = ['repository_path' => '/fixture/repository', 'base_branch' => 'main', 'max_runtime_seconds' => 60, 'max_tokens' => 1000, 'ideas_per_run' => 9];
+        $goal = Goal::factory()->queued()->ideas()->create(['settings' => $settings]);
+        $long = str_repeat('a', 199).'b'.str_repeat('c', 50);
+        MissionTask::factory()->create(['title' => "Fix\tthe\nform"]);
+        MissionTask::factory()->create(['title' => "\u{200B}"]);
+        MissionTask::factory()->create(['title' => $long]);
+
+        try {
+            app(CodexProcess::class)->plan($goal, fn (array $event) => null);
+
+            $payload = json_decode(file_get_contents($directory.'/payload.json'), true);
+            $this->assertSame('ideas', $payload['kind']);
+            $this->assertSame(5, $payload['maxIdeas']);
+            $this->assertSame([str_repeat('a', 199).'b', 'Fix the form'], $payload['avoid']);
+        } finally {
+            File::deleteDirectory($directory);
+        }
+    }
+
+    public function test_planning_an_ideas_goal_defaults_the_limit_and_omits_an_empty_avoid_list(): void
+    {
+        $directory = storage_path('framework/testing/codex-process-'.Str::uuid());
+        mkdir($directory, 0700, true);
+        file_put_contents($directory.'/fixture.php', <<<'PHP'
+<?php
+file_put_contents(__DIR__.'/payload.json', stream_get_contents(STDIN));
+echo json_encode(['type' => 'plan', 'success' => true, 'overview' => 'Looked.', 'briefs' => []])."\n";
+PHP);
+        config(['mission.node_binary' => PHP_BINARY, 'mission.worker_path' => $directory.'/fixture.php']);
+        $goal = Goal::factory()->queued()->ideas()->create(['settings' => ['repository_path' => '/r', 'base_branch' => 'main', 'max_runtime_seconds' => 60, 'max_tokens' => 1000]]);
+
+        try {
+            app(CodexProcess::class)->plan($goal, fn (array $event) => null);
+
+            $payload = json_decode(file_get_contents($directory.'/payload.json'), true);
+            $this->assertSame('ideas', $payload['kind']);
+            $this->assertSame(3, $payload['maxIdeas']);
+            $this->assertArrayNotHasKey('avoid', $payload);
+        } finally {
+            File::deleteDirectory($directory);
+        }
+    }
+
+    public function test_planning_an_owner_goal_sends_no_ideas_keys(): void
+    {
+        $directory = storage_path('framework/testing/codex-process-'.Str::uuid());
+        mkdir($directory, 0700, true);
+        file_put_contents($directory.'/fixture.php', <<<'PHP'
+<?php
+file_put_contents(__DIR__.'/payload.json', stream_get_contents(STDIN));
+echo json_encode(['type' => 'plan', 'success' => true, 'overview' => 'Plan.', 'briefs' => []])."\n";
+PHP);
+        config(['mission.node_binary' => PHP_BINARY, 'mission.worker_path' => $directory.'/fixture.php']);
+        $goal = Goal::factory()->queued()->create(['settings' => ['repository_path' => '/r', 'base_branch' => 'main', 'max_runtime_seconds' => 60, 'max_tokens' => 1000, 'ideas_per_run' => 2]]);
+        MissionTask::factory()->create(['title' => 'Existing work']);
+
+        try {
+            app(CodexProcess::class)->plan($goal, fn (array $event) => null);
+
+            $payload = json_decode(file_get_contents($directory.'/payload.json'), true);
+            $this->assertArrayNotHasKey('kind', $payload);
+            $this->assertArrayNotHasKey('maxIdeas', $payload);
+            $this->assertArrayNotHasKey('avoid', $payload);
+        } finally {
+            File::deleteDirectory($directory);
+        }
+    }
+
     public function test_control_characters_cannot_forge_new_lines_in_team_context(): void
     {
         $directory = storage_path('framework/testing/codex-process-'.Str::uuid());

@@ -21,6 +21,21 @@ class GoalTest extends TestCase
         $this->assertSame([$first->id, $second->id, $third->id], $goal->tasks()->pluck('id')->all());
     }
 
+    public function test_a_goal_without_a_source_belongs_to_the_owner(): void
+    {
+        $goal = Goal::create(['request' => 'Add a thing', 'settings' => []]);
+
+        $this->assertSame('owner', $goal->fresh()->source);
+    }
+
+    public function test_the_ideas_factory_state_marks_the_goal_as_ideas(): void
+    {
+        $goal = Goal::factory()->ideas()->create();
+
+        $this->assertSame('ideas', $goal->source);
+        $this->assertSame('Ideas from the leads', $goal->request);
+    }
+
     public function test_deleting_a_goal_keeps_its_tasks(): void
     {
         $goal = Goal::factory()->create();

@@ -8,13 +8,15 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-#[Fillable(['request', 'status', 'overview', 'error', 'usage', 'events', 'settings', 'started_at', 'finished_at'])]
+#[Fillable(['request', 'source', 'status', 'overview', 'error', 'usage', 'events', 'settings', 'started_at', 'finished_at'])]
 class Goal extends Model
 {
     /** @use HasFactory<GoalFactory> */
     use HasFactory;
 
     public const STATUSES = ['queued', 'planning', 'planned', 'failed'];
+
+    public const SOURCES = ['owner', 'ideas'];
 
     protected function casts(): array
     {

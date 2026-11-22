@@ -77,6 +77,22 @@ class GoalControllerTest extends TestCase
         $this->get(route('dashboard'))->assertOk()->assertSee('Give the Chief of Staff a goal')->assertSee('Improve search.')->assertSee('Planning')->assertSee(route('goals.show', $goal));
     }
 
+    public function test_the_dashboard_lists_owner_goals_but_not_ideas_runs(): void
+    {
+        $owner = Goal::factory()->create(['request' => 'Improve search.']);
+        $ideas = Goal::factory()->ideas()->create();
+
+        $this->get(route('dashboard'))->assertOk()->assertSee(route('goals.show', $owner))->assertDontSee(route('goals.show', $ideas));
+    }
+
+    public function test_the_goal_page_of_an_owner_goal_points_back_to_the_queue(): void
+    {
+        $this->get(route('goals.show', Goal::factory()->create()))->assertSee('Back to queue')->assertSee('<p class="eyebrow mb-0">Goal</p>', false)->assertDontSee('Back to ideas');
+
+        $failed = Goal::factory()->failed()->create(['error' => 'It broke.', 'usage' => ['input_tokens' => 1000, 'output_tokens' => 234]]);
+        $this->get(route('goals.show', $failed))->assertSee('The plan needs attention')->assertSee('1,234 tokens used planning')->assertDontSee('looking for ideas');
+    }
+
     public function test_the_task_page_and_queue_link_to_the_goal(): void
     {
         $goal = Goal::factory()->create(['request' => 'Improve search.']);

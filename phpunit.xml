@@ -32,6 +32,8 @@
         <env name="PULSE_ENABLED" value="false"/>
         <env name="TELESCOPE_ENABLED" value="false"/>
         <env name="NIGHTWATCH_ENABLED" value="false"/>
+        <env name="MISSION_IDEAS_ENABLED" value="true"/>
+        <env name="MISSION_IDEAS_PER_RUN" value="3"/>
         <env name="MISSION_GITHUB_REPOSITORY" value="example/project"/>
         <env name="MISSION_DEPLOY_WORKFLOW" value="deploy.yml"/>
         <env name="MISSION_STAGING_URL" value="https://staging.project.example.com"/>

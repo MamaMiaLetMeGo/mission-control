@@ -27,6 +27,11 @@ class GoalFactory extends Factory
         return $this->state(fn () => ['status' => 'planning']);
     }
 
+    public function ideas(): static
+    {
+        return $this->state(fn () => ['source' => 'ideas', 'request' => 'Ideas from the leads']);
+    }
+
     public function failed(): static
     {
         return $this->state(fn () => ['status' => 'failed']);

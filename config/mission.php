@@ -15,6 +15,8 @@ return [
     'daily_token_limit' => (int) env('MISSION_DAILY_TOKEN_LIMIT', 2000000),
     'brain_enabled' => (bool) env('MISSION_BRAIN_ENABLED', true),
     'brain_learn_after' => (int) env('MISSION_BRAIN_LEARN_AFTER', 5),
+    'ideas_enabled' => (bool) env('MISSION_IDEAS_ENABLED', true),
+    'ideas_per_run' => (int) env('MISSION_IDEAS_PER_RUN', 3),
     'preview_enabled' => (bool) env('MISSION_PREVIEW_ENABLED', false),
     'preview_driver' => env('MISSION_PREVIEW_DRIVER', 'laravel'),
     'preview_directory' => env('MISSION_PREVIEW_DIRECTORY', 'backend'),
