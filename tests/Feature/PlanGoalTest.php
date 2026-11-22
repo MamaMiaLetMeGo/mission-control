@@ -83,6 +83,62 @@ class PlanGoalTest extends TestCase
         $this->assertSlotIsFree();
     }
 
+    public function test_an_unusable_ideas_plan_fails_with_the_ideas_message(): void
+    {
+        config(['mission.openai_api_key' => 'test-key']);
+        $goal = Goal::factory()->queued()->ideas()->create();
+        $plan = ['type' => 'plan', 'success' => true, 'overview' => 'Looked.', 'briefs' => [
+            ['lead' => 'nobody', 'title' => 'One', 'request' => 'Why: it helps.', 'acceptanceCriteria' => 'One works.', 'priority' => 'normal', 'after' => []],
+        ]];
+
+        (new PlanGoal($goal->id))->handle($this->workerReturning($plan), app(ChiefOfStaff::class));
+
+        $goal->refresh();
+        $this->assertSame('failed', $goal->status);
+        $this->assertSame('The leads returned ideas that could not be used. Press "Get ideas now" to try again.', $goal->error);
+        $this->assertSlotIsFree();
+    }
+
+    public function test_an_ideas_run_without_an_error_from_the_worker_fails_with_the_ideas_message(): void
+    {
+        config(['mission.openai_api_key' => 'test-key']);
+        $goal = Goal::factory()->queued()->ideas()->create();
+
+        (new PlanGoal($goal->id))->handle($this->workerReturning(['type' => 'plan', 'success' => false]), app(ChiefOfStaff::class));
+
+        $goal->refresh();
+        $this->assertSame('failed', $goal->status);
+        $this->assertSame('The leads could not come up with ideas this time.', $goal->error);
+    }
+
+    public function test_an_owner_goal_without_an_error_from_the_worker_keeps_the_planning_message(): void
+    {
+        config(['mission.openai_api_key' => 'test-key']);
+        $goal = Goal::factory()->queued()->create();
+
+        (new PlanGoal($goal->id))->handle($this->workerReturning(['type' => 'plan', 'success' => false]), app(ChiefOfStaff::class));
+
+        $this->assertSame('The Chief of Staff could not plan this goal.', $goal->refresh()->error);
+    }
+
+    public function test_an_ideas_run_does_not_start_once_the_daily_token_limit_is_reached(): void
+    {
+        $this->freezeTime();
+        config(['mission.openai_api_key' => 'test-key', 'mission.daily_token_limit' => 10000]);
+        Goal::factory()->create(['usage' => ['input_tokens' => 8000, 'output_tokens' => 2000]]);
+        $goal = Goal::factory()->queued()->ideas()->create();
+        $worker = $this->mock(CodexProcess::class, function ($mock): void {
+            $mock->shouldNotReceive('plan');
+            $mock->shouldReceive('redact')->andReturnUsing(fn (string $message): string => $message);
+        });
+
+        (new PlanGoal($goal->id))->handle($worker, app(ChiefOfStaff::class));
+
+        $goal->refresh();
+        $this->assertSame('failed', $goal->status);
+        $this->assertSame('The daily token limit was reached before the leads could look for ideas. Try again tomorrow or raise the limit in Settings.', $goal->error);
+    }
+
     public function test_a_goal_waits_when_every_slot_is_busy(): void
     {
         config(['mission.openai_api_key' => 'test-key', 'mission.max_parallel_runs' => 1]);

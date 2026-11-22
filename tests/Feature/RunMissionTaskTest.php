@@ -315,6 +315,19 @@ class RunMissionTaskTest extends TestCase
         $this->assertSame($planned->status, $planned->refresh()->status);
     }
 
+    public function test_recovery_fails_a_stale_ideas_run_with_the_ideas_message(): void
+    {
+        $this->freezeTime();
+        $ideas = Goal::factory()->planning()->ideas()->create(['updated_at' => now()->subMinutes(30)]);
+        $owner = Goal::factory()->planning()->create(['updated_at' => now()->subMinutes(30)]);
+
+        $this->artisan('mission:recover')->expectsOutput('Marked 2 interrupted goal plan(s) as failed.')->assertExitCode(0);
+
+        $this->assertSame('failed', $ideas->refresh()->status);
+        $this->assertSame('The ideas run was interrupted. Press "Get ideas now" to try again.', $ideas->error);
+        $this->assertSame('Planning was interrupted. Give the goal again.', $owner->refresh()->error);
+    }
+
     public function test_recovery_fails_a_stale_queued_goal_only_once_no_job_is_pending(): void
     {
         $this->freezeTime();

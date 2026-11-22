@@ -22,6 +22,8 @@ class PlanGoal implements ShouldQueue
 
     private const UNUSABLE_PLAN = 'The Chief of Staff returned a plan that could not be used. Give the goal again.';
 
+    private const UNUSABLE_IDEAS = 'The leads returned ideas that could not be used. Press "Get ideas now" to try again.';
+
     /**
      * Unlimited attempts: a goal waiting for a free slot is released back to the queue until retryUntil().
      */
@@ -63,8 +65,11 @@ class PlanGoal implements ShouldQueue
             if ($claimed !== 1) {
                 return;
             }
+            $isIdeas = $goal->source === 'ideas';
             if (app(TokenBudget::class)->exhausted()) {
-                throw new RuntimeException('The daily token limit was reached before planning could start. Give the goal again tomorrow or raise the limit in Settings.');
+                throw new RuntimeException($isIdeas
+                    ? 'The daily token limit was reached before the leads could look for ideas. Try again tomorrow or raise the limit in Settings.'
+                    : 'The daily token limit was reached before planning could start. Give the goal again tomorrow or raise the limit in Settings.');
             }
             if (! config('mission.openai_api_key')) {
                 throw new RuntimeException('The queue worker has no API key. Restart it after configuring the key.');
@@ -81,12 +86,12 @@ class PlanGoal implements ShouldQueue
             });
             $goal->update(['usage' => $result['usage'] ?? $goal->usage]);
             if (($result['success'] ?? false) !== true) {
-                throw new RuntimeException(is_string($result['error'] ?? null) && $result['error'] !== '' ? $result['error'] : 'The Chief of Staff could not plan this goal.');
+                throw new RuntimeException(is_string($result['error'] ?? null) && $result['error'] !== '' ? $result['error'] : ($isIdeas ? 'The leads could not come up with ideas this time.' : 'The Chief of Staff could not plan this goal.'));
             }
             try {
                 $chief->createTasks($goal, $result);
             } catch (InvalidArgumentException) {
-                throw new RuntimeException(self::UNUSABLE_PLAN);
+                throw new RuntimeException($isIdeas ? self::UNUSABLE_IDEAS : self::UNUSABLE_PLAN);
             }
             try {
                 $chief->dispatch();
