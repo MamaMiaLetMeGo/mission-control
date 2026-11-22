@@ -36,6 +36,9 @@
         @case('spark')
             <path d="m12 3 2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4L12 3Z" />
             @break
+        @case('bulb')
+            <path d="M9 18h6m-5 3h4M12 3a6 6 0 0 0-3.5 10.9c.6.4 1 1.1 1 1.8V16h5v-.3c0-.7.4-1.4 1-1.8A6 6 0 0 0 12 3Z" />
+            @break
         @case('alert')
             <circle cx="12" cy="12" r="9" /><path d="M12 7v6m0 4h.01" />
             @break
