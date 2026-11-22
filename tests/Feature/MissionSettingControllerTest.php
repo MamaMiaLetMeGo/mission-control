@@ -225,9 +225,54 @@ class MissionSettingControllerTest extends TestCase
             ->assertSee('name="brain_learn_after"', false);
     }
 
+    public function test_daily_ideas_default_on_with_three_per_run(): void
+    {
+        $settings = app(MissionSettings::class)->all();
+
+        $this->assertTrue($settings['ideas_enabled']);
+        $this->assertSame(3, $settings['ideas_per_run']);
+    }
+
+    public function test_saves_ideas_settings_and_stores_false_when_the_checkbox_is_unchecked(): void
+    {
+        $this->fakeGit();
+        $this->post(route('settings.update'), [...$this->payload(), 'ideas_enabled' => '1', 'ideas_per_run' => '5'])->assertRedirect(route('settings.edit'));
+        $saved = app(MissionSettings::class)->all();
+        $this->assertTrue($saved['ideas_enabled']);
+        $this->assertSame(5, $saved['ideas_per_run']);
+
+        $this->fakeGit();
+        $this->post(route('settings.update'), $this->payload())->assertRedirect(route('settings.edit'));
+        $this->assertFalse(app(MissionSettings::class)->all()['ideas_enabled']);
+    }
+
+    #[DataProvider('invalidIdeasPerRun')]
+    public function test_rejects_ideas_per_run_outside_one_to_five(mixed $count): void
+    {
+        $response = $this->post(route('settings.update'), [...$this->payload(), 'ideas_per_run' => $count]);
+
+        $response->assertSessionHasErrors('ideas_per_run');
+        $this->assertDatabaseCount('mission_settings', 0);
+    }
+
+    public static function invalidIdeasPerRun(): array
+    {
+        return ['zero' => [0], 'too many' => [6], 'fraction' => [1.5], 'missing' => ['']];
+    }
+
+    public function test_settings_page_shows_the_ideas_settings(): void
+    {
+        $this->get(route('settings.edit'))->assertOk()
+            ->assertSee('Let the leads propose ideas every day')
+            ->assertSee('Once a day a read-only agent looks at the project and proposes small pieces of work. They are built after your own goals and wait for your review like any other task.')
+            ->assertSee('Ideas per day')
+            ->assertSee('name="ideas_enabled"', false)
+            ->assertSee('name="ideas_per_run"', false);
+    }
+
     private function payload(): array
     {
-        return ['repository_path' => base_path(), 'base_branch' => 'main', 'model' => '', 'test_command' => '["php","artisan","test"]', 'max_runtime_seconds' => 600, 'max_tokens' => 50000, 'daily_run_limit' => 5, 'max_parallel_runs' => 3, 'daily_token_limit' => 2000000, 'review_rounds' => 2, 'brain_learn_after' => 5];
+        return ['repository_path' => base_path(), 'base_branch' => 'main', 'model' => '', 'test_command' => '["php","artisan","test"]', 'max_runtime_seconds' => 600, 'max_tokens' => 50000, 'daily_run_limit' => 5, 'max_parallel_runs' => 3, 'daily_token_limit' => 2000000, 'review_rounds' => 2, 'brain_learn_after' => 5, 'ideas_per_run' => 3];
     }
 
     private function fakeGit(): void
