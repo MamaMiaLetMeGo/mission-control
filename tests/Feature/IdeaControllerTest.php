@@ -32,7 +32,7 @@ class IdeaControllerTest extends TestCase
     public function test_the_ideas_page_lists_idea_tasks_only(): void
     {
         $lead = Lead::factory()->create(['name' => 'Growth Lead']);
-        $ideas = Goal::factory()->ideas()->create(['overview' => 'Two small wins.']);
+        $ideas = Goal::factory()->ideas()->create(['overview' => 'Two small wins.', 'created_at' => now()->subHours(2)]);
         $owner = Goal::factory()->create();
         $idea = MissionTask::factory()->forGoal($ideas)->create(['title' => 'Tidy the empty state <b>now</b>', 'lead_id' => $lead->id, 'status' => 'review']);
         MissionTask::factory()->forGoal($owner)->create(['title' => 'Owner goal work']);
@@ -46,6 +46,7 @@ class IdeaControllerTest extends TestCase
             ->assertSee('Growth Lead')
             ->assertSee('Needs review')
             ->assertSee('Two small wins.')
+            ->assertSee('2 hours ago')
             ->assertDontSee('Owner goal work')
             ->assertDontSee('Loose task')
             ->assertDontSee('No ideas yet.');
@@ -72,6 +73,42 @@ class IdeaControllerTest extends TestCase
         $this->get(route('ideas.index'))
             ->assertSee('http-equiv="refresh" content="5"', false)
             ->assertSee('The leads are looking at the project. This page refreshes automatically.');
+    }
+
+    public function test_a_working_ideas_run_hides_the_actions_on_earlier_ideas(): void
+    {
+        $earlier = Goal::factory()->ideas()->create();
+        MissionTask::factory()->forGoal($earlier)->create(['title' => 'Earlier idea', 'status' => 'backlog']);
+        Goal::factory()->ideas()->planning()->create();
+
+        $this->get(route('ideas.index'))
+            ->assertSee('http-equiv="refresh" content="5"', false)
+            ->assertSee('Earlier idea')
+            ->assertDontSee('Dismiss')
+            ->assertDontSee('Start now');
+    }
+
+    public function test_a_rejected_dismissal_keeps_the_reason_only_in_its_own_row(): void
+    {
+        $ideas = Goal::factory()->ideas()->create();
+        $first = MissionTask::factory()->forGoal($ideas, 1)->create(['status' => 'backlog']);
+        $second = MissionTask::factory()->forGoal($ideas, 2)->create(['status' => 'backlog']);
+
+        $response = $this->withSession(['_old_input' => ['idea' => (string) $second->id, 'action' => 'reject', 'feedback' => 'Half-typed reason']])
+            ->get(route('ideas.index'))->assertOk();
+
+        $this->assertMatchesRegularExpression('/id="dismiss-feedback-'.$second->id.'"[^>]*value="Half-typed reason"/', $response->getContent());
+        $this->assertDoesNotMatchRegularExpression('/id="dismiss-feedback-'.$first->id.'"[^>]*value="Half-typed reason"/', $response->getContent());
+        $this->assertSame(1, substr_count($response->getContent(), 'Half-typed reason'));
+    }
+
+    public function test_the_dismiss_form_names_its_idea_and_the_decision_accepts_it(): void
+    {
+        $task = MissionTask::factory()->forGoal(Goal::factory()->ideas()->create())->create(['status' => 'backlog']);
+
+        $this->get(route('ideas.index'))->assertSee('<input type="hidden" name="idea" value="'.$task->id.'">', false);
+        $this->post(route('tasks.decide', $task), ['idea' => (string) $task->id, 'action' => 'reject', 'feedback' => 'Not now'])->assertRedirect(route('tasks.show', $task));
+        $this->assertSame('rejected', $task->fresh()->status);
     }
 
     public function test_a_failed_ideas_run_shows_its_error(): void

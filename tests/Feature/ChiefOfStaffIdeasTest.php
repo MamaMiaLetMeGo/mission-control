@@ -183,6 +183,36 @@ class ChiefOfStaffIdeasTest extends TestCase
         $this->assertSame(['high', 'low', 'normal'], $tasks->pluck('priority')->all());
     }
 
+    public function test_an_ideas_plan_ignores_invalid_dependencies_on_kept_briefs(): void
+    {
+        [$first, $second] = $this->leadKeys();
+        $goal = Goal::factory()->ideas()->planning()->create(['settings' => ['ideas_per_run' => 3]]);
+        $notAList = [...$this->brief($first, 'Three', 'normal'), 'after' => 'first'];
+
+        app(ChiefOfStaff::class)->createTasks($goal, $this->plan([
+            $this->brief($first, 'One', 'normal'),
+            $this->brief($second, 'Two', 'normal', [3]),
+            $notAList,
+        ]));
+
+        $tasks = $goal->refresh()->tasks;
+        $this->assertSame('planned', $goal->status);
+        $this->assertSame(['One', 'Two', 'Three'], $tasks->pluck('title')->all());
+        $this->assertSame([null, null, null], $tasks->pluck('depends_on')->all());
+    }
+
+    public function test_an_ideas_plan_without_a_list_of_briefs_names_the_ideas_limit(): void
+    {
+        $goal = Goal::factory()->ideas()->planning()->create(['settings' => ['ideas_per_run' => 3]]);
+
+        try {
+            app(ChiefOfStaff::class)->createTasks($goal, ['overview' => 'The ideas.', 'briefs' => 'none']);
+            $this->fail('The plan without briefs was accepted.');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertStringContainsString('0 to 3 ideas', $exception->getMessage());
+        }
+    }
+
     public function test_an_ideas_plan_never_exceeds_the_maximum_run_size(): void
     {
         [$first] = $this->leadKeys();

@@ -117,16 +117,19 @@ class ChiefOfStaff
 
     /**
      * Turn a plan into backlog tasks and mark the goal planned. Throws InvalidArgumentException for an unusable plan.
+     * For an ideas goal only the first `ideas_per_run` briefs are kept; briefs beyond them are ignored unchecked, and the
+     * kept briefs' dependencies are dropped before validation because ideas never depend on each other.
      *
      * @param  array<string, mixed>  $plan
      */
     public function createTasks(Goal $goal, array $plan): void
     {
         $isIdeas = $goal->source === 'ideas';
+        $ideasLimit = max(1, min(self::MAX_IDEAS, (int) ($goal->settings['ideas_per_run'] ?? 3)));
         if ($isIdeas && is_array($plan['briefs'] ?? null) && array_is_list($plan['briefs'])) {
-            $plan['briefs'] = array_slice($plan['briefs'], 0, max(1, min(self::MAX_IDEAS, (int) ($goal->settings['ideas_per_run'] ?? 3))));
+            $plan['briefs'] = array_map(fn (mixed $brief): mixed => is_array($brief) ? [...$brief, 'after' => []] : $brief, array_slice($plan['briefs'], 0, $ideasLimit));
         }
-        $briefs = $this->validated($plan, $isIdeas ? 0 : 1);
+        $briefs = $isIdeas ? $this->validated($plan, 0, $ideasLimit, 'ideas') : $this->validated($plan);
         $leads = Lead::query()->active()->pluck('id', 'key');
         DB::transaction(function () use ($goal, $plan, $briefs, $leads, $isIdeas): void {
             $ids = [];
@@ -199,15 +202,15 @@ class ChiefOfStaff
      * @param  array<string, mixed>  $plan
      * @return list<array{lead: string, title: string, request: string, acceptanceCriteria: string, priority: string, after: list<int>}>
      */
-    private function validated(array $plan, int $minimumBriefs = 1): array
+    private function validated(array $plan, int $minimumBriefs = 1, int $maximumBriefs = self::MAX_BRIEFS, string $noun = 'briefs'): array
     {
         $overview = $plan['overview'] ?? null;
         $briefs = $plan['briefs'] ?? null;
         if (! is_string($overview) || ! $this->within($overview, 4000)) {
             $this->invalid('The overview must be 1 to 4000 characters.');
         }
-        if (! is_array($briefs) || ! array_is_list($briefs) || count($briefs) < $minimumBriefs || count($briefs) > self::MAX_BRIEFS) {
-            $this->invalid('The plan must have '.$minimumBriefs.' to '.self::MAX_BRIEFS.' briefs.');
+        if (! is_array($briefs) || ! array_is_list($briefs) || count($briefs) < $minimumBriefs || count($briefs) > $maximumBriefs) {
+            $this->invalid('The plan must have '.$minimumBriefs.' to '.$maximumBriefs.' '.$noun.'.');
         }
         $keys = Lead::query()->active()->pluck('key')->all();
         $checked = [];
